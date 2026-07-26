@@ -99,6 +99,24 @@ python predict-configurable.py data/test/images
 `outputs/test/` by default. Change the constants at the top of that file if you
 need a different checkpoint, output folder, tile size, or overlap.
 
+Calculate statistics and make mask reports with a statistics panel:
+
+```bash
+python statistics/get-statistics.py outputs/test \
+  --output outputs/test/statistics/statistics.csv \
+  --report-dir outputs/test/statistics
+```
+
+Create grouped statistical summaries and charts from that CSV. By default,
+groups are inferred from magnifications in the image names, such as `10X`:
+
+```bash
+python statistics/analyze-statistics.py outputs/test/statistics/statistics.csv
+```
+
+This writes a Markdown report, source and grouped-summary CSV files, boxplots,
+and mean comparison charts in `statistics/analysis/`.
+
 Run tests:
 
 ```bash

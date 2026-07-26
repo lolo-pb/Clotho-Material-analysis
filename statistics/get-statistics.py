@@ -3,11 +3,12 @@ import csv
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from src.labels import encode_mask, read_rgb
+from src.labels import CLASS_COLORS_RGB, encode_mask, read_rgb, write_rgb
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -85,6 +86,105 @@ def write_csv(rows: list[dict[str, object]], output_path: Path) -> None:
         writer.writerows(rows)
 
 
+def write_statistics_report(
+    mask_path: Path,
+    statistics: dict[str, object],
+    output_path: Path,
+    crop_bottom_pixels: int = 0,
+) -> None:
+    mask = crop_bottom(read_rgb(mask_path), crop_bottom_pixels)
+    height, width = mask.shape[:2]
+    panel_width = 500
+    report = np.full((height, width + panel_width, 3), 255, dtype=np.uint8)
+    report[:, :width] = mask
+
+    x = width + 32
+    cv2.putText(
+        report,
+        "Segmentation statistics",
+        (x, 55),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (0, 0, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        report,
+        mask_path.stem.removesuffix("-mask"),
+        (x, 90),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (70, 70, 70),
+        1,
+        cv2.LINE_AA,
+    )
+
+    labels = (
+        ("Fiber", "fibers", CLASS_COLORS_RGB[0]),
+        ("Resin", "resin", CLASS_COLORS_RGB[1]),
+        ("Pore", "pores", CLASS_COLORS_RGB[2]),
+        ("Unidentified", "undefined", CLASS_COLORS_RGB[3]),
+    )
+    for index, (label, key, color) in enumerate(labels):
+        y = 155 + index * 72
+        cv2.rectangle(report, (x, y - 24), (x + 36, y + 12), tuple(map(int, color)), -1)
+        cv2.rectangle(report, (x, y - 24), (x + 36, y + 12), (90, 90, 90), 1)
+        cv2.putText(
+            report,
+            f"{label}: {statistics[key]:.2f}%",
+            (x + 54, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 0, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+    cv2.putText(
+        report,
+        f"Counted: {statistics['sumcheck']:.2f}%",
+        (x, 480),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 0, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        report,
+        f"Invalid colors: {statistics['invalid_percent']:.2f}%",
+        (x, 525),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 0, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        report,
+        f"Pixels: {statistics['total_pixels']:,}",
+        (x, 570),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 0, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    write_rgb(output_path, report)
+
+
+def write_statistics_reports(
+    rows: list[dict[str, object]],
+    output_dir: Path,
+    crop_bottom_pixels: int,
+) -> None:
+    for row in rows:
+        mask_path = Path(str(row["Image Paths"]))
+        output_path = output_dir / f"{mask_path.stem.removesuffix('-mask')}-statistics.png"
+        write_statistics_report(mask_path, row, output_path, crop_bottom_pixels)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Calculate class percentages from exact-color segmentation masks."
@@ -106,6 +206,11 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Pixels to remove from the bottom before counting.",
     )
+    parser.add_argument(
+        "--report-dir",
+        type=Path,
+        help="Optional folder for mask-and-statistics PNG reports.",
+    )
     return parser.parse_args()
 
 
@@ -122,6 +227,9 @@ def main() -> int:
     ]
     write_csv(rows, args.output)
     print(f"Wrote statistics for {len(rows)} image(s) to {args.output}")
+    if args.report_dir:
+        write_statistics_reports(rows, args.report_dir, args.crop_bottom)
+        print(f"Wrote report images to {args.report_dir}")
     return 0
 
 
