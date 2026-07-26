@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from src.labels import (
+from common.labels import (
     CLASS_COLORS_RGB,
     decode_mask,
     encode_mask,

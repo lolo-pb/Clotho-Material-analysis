@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from predict import predict_image, tile_starts
+from predicting.predict import predict_image, tile_starts
 
 
 class ConstantModel(nn.Module):

@@ -4,13 +4,13 @@ from pathlib import Path
 import cv2
 import torch
 
-from predict import predict_image
-from src.labels import decode_mask, read_rgb, write_rgb
-from src.model import FiberglassUNet
+from common.labels import decode_mask, read_rgb, write_rgb
+from common.model import FiberglassUNet
+from predicting.predict import predict_image
 
 
 CHECKPOINT_PATH = Path("checkpoints/final.pt")
-OUTPUT_DIR = Path("outputs/test")
+OUTPUT_DIR = Path("predicting/outputs")
 TILE_SIZE = 512
 OVERLAP = 128
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}

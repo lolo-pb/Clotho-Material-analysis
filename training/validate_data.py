@@ -1,15 +1,15 @@
 import argparse
 from pathlib import Path
 
-from src.validation import validate_dataset
+from common.validation import validate_dataset
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate painted segmentation masks.")
-    parser.add_argument("--images", type=Path, default=Path("data/images"))
-    parser.add_argument("--masks", type=Path, default=Path("data/masks"))
+    parser.add_argument("--images", type=Path, default=Path("training/images"))
+    parser.add_argument("--masks", type=Path, default=Path("training/masks"))
     parser.add_argument(
-        "--clean-output", type=Path, default=Path("data/validated_masks")
+        "--clean-output", type=Path, default=Path("training/validated_masks")
     )
     parser.add_argument(
         "--with-overlays",

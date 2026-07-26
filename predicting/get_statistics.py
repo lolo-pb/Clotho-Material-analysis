@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from src.labels import CLASS_COLORS_RGB, encode_mask, read_rgb, write_rgb
+from common.labels import CLASS_COLORS_RGB, encode_mask, read_rgb, write_rgb
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -197,7 +197,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("statistics/statistics.csv"),
+        default=Path("predicting/outputs/statistics/statistics.csv"),
         help="CSV output path.",
     )
     parser.add_argument(

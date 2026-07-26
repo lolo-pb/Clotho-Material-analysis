@@ -5,18 +5,18 @@ import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from src.dataset import SegmentationDataset
-from src.loss import segmentation_loss
-from src.model import FiberglassUNet
-from src.validation import validate_dataset
+from common.dataset import SegmentationDataset
+from common.loss import segmentation_loss
+from common.model import FiberglassUNet
+from common.validation import validate_dataset
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train fiberglass segmentation model.")
-    parser.add_argument("--images", type=Path, default=Path("data/images"))
-    parser.add_argument("--masks", type=Path, default=Path("data/masks"))
+    parser.add_argument("--images", type=Path, default=Path("training/images"))
+    parser.add_argument("--masks", type=Path, default=Path("training/masks"))
     parser.add_argument(
-        "--validated-masks", type=Path, default=Path("data/validated_masks")
+        "--validated-masks", type=Path, default=Path("training/validated_masks")
     )
     parser.add_argument("--checkpoints", type=Path, default=Path("checkpoints"))
     parser.add_argument("--epochs", type=int, default=30)

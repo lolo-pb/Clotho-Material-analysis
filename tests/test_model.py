@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from src.model import FiberglassUNet
+from common.model import FiberglassUNet
 
 
 class ModelTests(unittest.TestCase):

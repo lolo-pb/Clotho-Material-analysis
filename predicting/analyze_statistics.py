@@ -206,13 +206,13 @@ def write_report(path: Path, rows: list[dict[str, object]], summary_rows: list[d
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create grouped descriptive statistics and charts from get-statistics.py CSV output."
+        description="Create grouped descriptive statistics and charts from get_statistics.py CSV output."
     )
-    parser.add_argument("input_csv", type=Path, help="CSV created by get-statistics.py")
+    parser.add_argument("input_csv", type=Path, help="CSV created by get_statistics.py")
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("statistics/analysis"),
+        default=Path("predicting/outputs/statistics/analysis"),
         help="Folder for CSV summaries, report, and PNG charts.",
     )
     return parser.parse_args()

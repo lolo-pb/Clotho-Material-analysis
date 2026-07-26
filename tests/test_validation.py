@@ -4,8 +4,8 @@ from pathlib import Path
 
 import numpy as np
 
-from src.labels import decode_mask, encode_mask, read_rgb, write_rgb
-from src.validation import validate_dataset
+from common.labels import decode_mask, encode_mask, read_rgb, write_rgb
+from common.validation import validate_dataset
 
 
 def make_overlay(image: np.ndarray, mask: np.ndarray) -> np.ndarray:

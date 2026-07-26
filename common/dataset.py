@@ -6,8 +6,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from src.labels import encode_mask, read_rgb
-from src.validation import Pair
+from common.labels import encode_mask, read_rgb
+from common.validation import Pair
 
 
 IMAGENET_MEAN = np.array((0.485, 0.456, 0.406), dtype=np.float32)

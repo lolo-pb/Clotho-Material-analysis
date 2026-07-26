@@ -5,9 +5,9 @@ import cv2
 import numpy as np
 import torch
 
-from src.dataset import normalize_image
-from src.labels import decode_mask, read_rgb, write_rgb
-from src.model import FiberglassUNet
+from common.dataset import normalize_image
+from common.labels import decode_mask, read_rgb, write_rgb
+from common.model import FiberglassUNet
 
 
 def tile_starts(length: int, tile_size: int, overlap: int) -> list[int]:
@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Segment a fiberglass micrograph.")
     parser.add_argument("image", type=Path)
     parser.add_argument("--checkpoint", type=Path, default=Path("checkpoints/final.pt"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
+    parser.add_argument("--output-dir", type=Path, default=Path("predicting/outputs"))
     parser.add_argument("--tile-size", type=int, default=512)
     parser.add_argument("--overlap", type=int, default=128)
     return parser.parse_args()
