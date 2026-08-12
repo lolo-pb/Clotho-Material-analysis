@@ -9,8 +9,8 @@ out of image-by-image inspection and produces masks, overlays, statistics, and
 analysis reports from a repeatable command-line workflow.
 
 <p align="center">
-  <img src="predicting/images/50X%20BF%20EXP5%20-%207.jpg" alt="Unprocessed 50X fiberglass micrograph" width="48%" />
-  <img src="predicting/outputs/50X%20BF%20EXP5%20-%207-overlay.png" alt="Segmentation overlay for the same 50X fiberglass micrograph" width="48%" />
+  <img src="docs/assets/fiberglass-50x-source.jpg" alt="Unprocessed 50X fiberglass micrograph" width="48%" />
+  <img src="docs/assets/fiberglass-50x-overlay.png" alt="Segmentation overlay for the same 50X fiberglass micrograph" width="48%" />
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@ analysis reports from a repeatable command-line workflow.
 ## Statistics, at a glance
 
 <p align="center">
-  <img src="predicting/outputs/statistics/50X%20BF%20EXP5%20-%207-statistics.png" alt="Segmentation statistics for the 50X BF EXP5 - 7 sample" width="85%" />
+  <img src="docs/assets/fiberglass-50x-statistics.png" alt="Segmentation statistics for the 50X BF EXP5 - 7 sample" width="85%" />
 </p>
 
 <p align="center"><em>Composition summary generated for the same sample.</em></p>

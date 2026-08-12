@@ -24,6 +24,12 @@ Thumbs.db
 *.tiff
 *.webp
 
+# Versioned README visual assets
+!docs/
+!docs/assets/
+!docs/assets/*.jpg
+!docs/assets/*.png
+
 # Generated data and predictions
 data/validated_masks/
 outputs/
