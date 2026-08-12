@@ -1,5 +1,41 @@
 # Fiberglass micrograph segmentation
 
+> **Turning microscopic structure into measurable material insight.**
+
+This project trains a semantic-segmentation model to read fiberglass
+micrographs at the pixel level: separating **fiber**, **resin**, and **pore**
+regions from the visual texture of a composite. It takes the repetitive work
+out of image-by-image inspection and produces masks, overlays, statistics, and
+analysis reports from a repeatable command-line workflow.
+
+<p align="center">
+  <img src="predicting/images/50X%20BF%20EXP5%20-%207.jpg" alt="Unprocessed 50X fiberglass micrograph" width="48%" />
+  <img src="predicting/outputs/50X%20BF%20EXP5%20-%207-overlay.png" alt="Segmentation overlay for the same 50X fiberglass micrograph" width="48%" />
+</p>
+
+<p align="center">
+  <em>Left: unprocessed source image. Right: model overlay — fiber in red, resin in green, and pore in blue.</em>
+</p>
+
+## Statistics, at a glance
+
+<p align="center">
+  <img src="predicting/outputs/statistics/50X%20BF%20EXP5%20-%207-statistics.png" alt="Segmentation statistics for the 50X BF EXP5 - 7 sample" width="85%" />
+</p>
+
+<p align="center"><em>Composition summary generated for the same sample.</em></p>
+
+## At a glance
+
+- **Label-aware training** — learns from painted masks where fiber is red,
+  resin is green, pore is blue, and unidentified pixels are black.
+- **End-to-end workflow** — validates annotations, trains a model, generates
+  predictions, and produces statistics in one guided sequence.
+- **Practical outputs** — creates segmentation masks, visual overlays, and
+  analysis-ready reports for every image in a batch.
+
+## Quick start
+
 `controller.py` is the simple way to run this project:
 
 ```bash
