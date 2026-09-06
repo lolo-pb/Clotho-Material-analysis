@@ -35,7 +35,10 @@ data/validated_masks/
 outputs/
 
 # Trained models and checkpoints
-checkpoints/
+checkpoints/*
 *.pt
 *.pth
 *.onnx
+
+# Ship the final trained model, but keep intermediate checkpoints local.
+!checkpoints/final.pt

@@ -34,17 +34,49 @@ analysis reports from a repeatable command-line workflow.
 - **Practical outputs** — creates segmentation masks, visual overlays, and
   analysis-ready reports for every image in a batch.
 
-## Quick start
+## Requirements and installation
 
-`controller.py` is the simple way to run this project:
+You need Git and Python 3.10 or newer. The pinned dependencies use the CPU
+build of PyTorch, so a GPU is not required.
 
 ```bash
-python controller.py
+git clone https://github.com/lolo-pb/opencv-testing.git
+cd opencv-testing
+python3 controller.py setup
 ```
 
-It prints every command and the folders to use. First run
-`python controller.py setup`; then use `python controller.py all` for the
-complete workflow.
+On Windows, use `py` instead of `python3`. The setup command creates `.ven/`
+and installs the packages from `requirements.txt`. Later controller commands
+automatically use that environment, so you do not need to activate it.
+
+## Run the pretrained model
+
+The repository includes `checkpoints/final.pt`, the four-class checkpoint from
+epoch 80. You can run inference immediately after installation; the private
+training dataset is not required.
+
+To segment one image:
+
+```bash
+python3 controller.py predict path/to/micrograph.jpg
+```
+
+To process all supported images directly inside a folder:
+
+```bash
+python3 controller.py predict path/to/images
+```
+
+With no path, the command reads from `predicting/images/`:
+
+```bash
+python3 controller.py predict
+```
+
+JPEG, PNG, BMP, TIFF, and WebP inputs are supported. Each prediction creates a
+color mask and an overlay in `predicting/outputs/`.
+
+Run `python3 controller.py` at any time to print the built-in command guide.
 
 ## Folders
 
@@ -74,10 +106,36 @@ python controller.py all --with-overlays
 python controller.py test
 ```
 
-`all` validates the training data, trains a fresh model, predicts every image
-in `predicting/images/`, then makes statistics and analysis reports. It stops
-when a step fails. Add `--with-overlays` when your training masks include
-corrected overlays.
+The examples use `python`; use the same Python launcher (`python3`, `python`, or
+`py`) that you used during setup.
+
+## Train your own model
+
+Training data is not included. Add original micrographs to `training/images/`
+and same-name painted PNG masks to `training/masks/`. Mask colors are red for
+fiber, green for resin, blue for pore, and black for unidentified pixels.
+
+Then validate and train:
+
+```bash
+python3 controller.py validate
+python3 controller.py train
+```
+
+Training writes `checkpoints/latest.pt`, an intermediate checkpoint every five
+epochs, and `checkpoints/final.pt`. These intermediate files remain ignored by
+Git.
+
+For the complete workflow, place prediction inputs in `predicting/images/`
+and run:
+
+```bash
+python3 controller.py all
+```
+
+`all` validates the training data, trains a fresh model, predicts every input,
+then creates statistics and analysis reports. It stops when a step fails. Add
+`--with-overlays` when the training masks include corrected overlays.
 
 ## Advanced direct use
 
