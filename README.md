@@ -78,6 +78,23 @@ color mask and an overlay in `predicting/outputs/`.
 
 Run `python3 controller.py` at any time to print the built-in command guide.
 
+## Web interface
+
+After installation, start the local web interface:
+
+```bash
+python3 web.py
+```
+
+Open <http://127.0.0.1:8000> and upload one micrograph. The page displays the
+original image, exact-color mask, overlay, and percentages for fiber, resin,
+pore, and unidentified pixels. The mask, overlay, and a one-row statistics CSV
+can be downloaded from the results page.
+
+The interface runs only on your computer. Uploaded images and generated
+results are not retained or written to the project output folders. Each upload
+is limited to 20 MiB and 25 megapixels.
+
 ## Folders
 
 - `training/images/`: original pictures used to train the model.
