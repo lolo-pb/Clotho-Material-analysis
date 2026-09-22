@@ -79,6 +79,7 @@ class WebTests(unittest.TestCase):
         self.assertIn('id="csv-download"', html)
         self.assertIn('id="selection-list"', html)
         self.assertIn('id="batch-progress-bar"', html)
+        self.assertIn('id="batch-detail"', html)
 
     def test_prediction_returns_pngs_and_pore_statistics(self):
         upload = UploadFile(file=io.BytesIO(encode_test_image()), filename="sample.png")
@@ -125,8 +126,13 @@ class WebTests(unittest.TestCase):
 
         self.assertEqual(result["filename"], "sample image.png")
         self.assertEqual(result["summary"]["successful_images"], 1)
+        self.assertEqual(result["result_index"], 0)
         self.assertEqual(len(web.BATCH_SESSIONS[batch_id].results), 1)
         self.assertTrue(result["thumbnail_data_url"].startswith("data:image/png;base64,"))
+
+        overlay = web.batch_overlay(batch_id, result["result_index"], request)
+        self.assertEqual(overlay.media_type, "image/png")
+        self.assertTrue(overlay.body.startswith(b"\x89PNG"))
 
         archive = web.download_batch(batch_id, request)
         with zipfile.ZipFile(io.BytesIO(archive.body)) as downloaded:

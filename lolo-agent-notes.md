@@ -81,15 +81,9 @@ The legacy `example-microg-processed/` folder is not used by the pipeline.
 
 - Desktop batch analysis keeps generated results only in memory until the user discards them or closes the app; downloads create a ZIP without clearing the batch. It has a 25-image limit but no byte-based memory limit yet. Add one if larger batches create memory pressure.
 
-- a way to know that images have been uploaded or files selected.
+- a nicer way to know that images have been uploaded or files selected.
 
-- an actuall progress bar while processing
 
-- Let users click a batch overlay to open an in-app modal. Show the original
-  beside the overlay and the four composition cards; after the original is no
-  longer available, show the overlay and its statistics alone.
+- Let users click a batch overlay to open an in-app modal. Show the original beside the overlay and the four composition cards; after the original is no longer available, show the overlay and its statistics alone.
 
-- Add four box-and-strip plots after the batch composition cards and before the
-  image table. Plot each image's fiber, resin, pore, and unidentified
-  percentage to show spread, median, and outliers. Wait for sample or
-  magnification grouping before adding further comparative analytics.
+- Add four box-and-strip plots after the batch composition cards and before the image table. Plot each image's fiber, resin, pore, and unidentified percentage to show spread, median, and outliers. Wait for sample or magnification grouping before adding further comparative analytics.

@@ -433,8 +433,10 @@ async def add_batch_image(batch_id: str, request: Request) -> dict[str, object]:
     )
     with BATCH_LOCK:
         session.results.append(result)
+        result_index = len(session.results) - 1
         summary = batch_summary(session)
     return {
+        "result_index": result_index,
         "filename": filename,
         "width": width,
         "height": height,
@@ -465,6 +467,18 @@ def download_batch(batch_id: str, request: Request) -> Response:
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=clotho-batch-results.zip"},
     )
+
+
+@app.get("/batches/{batch_id}/images/{image_index}/overlay")
+def batch_overlay(batch_id: str, image_index: int, request: Request) -> Response:
+    require_session(request)
+    session = batch_session_or_404(batch_id)
+    with BATCH_LOCK:
+        try:
+            overlay_png = session.results[image_index].overlay_png
+        except IndexError as error:
+            raise HTTPException(status_code=404, detail="Batch image not found.") from error
+    return Response(overlay_png, media_type="image/png")
 
 
 @app.post("/predict")
@@ -604,17 +618,34 @@ PAGE_HTML = """<!doctype html>
     .batch-errors { color: var(--error); margin: 18px 0; }
     .batch-thumbnails { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; margin-top: 22px; }
     .batch-thumbnails img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #080b0a; border-radius: 12px; }
+    .thumbnail-button { display: block; width: 100%; padding: 0; border: 0; border-radius: 12px; background: transparent; cursor: pointer; }
+    .thumbnail-button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
     .batch-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
     .progress { margin: 0 0 24px; }
     .progress-track { height: 10px; overflow: hidden; border-radius: 99px; background: var(--panel-light); }
     .progress-bar { width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .2s ease; }
     .progress-label { margin: 9px 0 0; color: var(--muted); font-size: .9rem; }
+    dialog { width: min(1180px, calc(100% - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 22px; background: var(--panel); color: var(--text); box-shadow: 0 30px 100px #000a; }
+    dialog::backdrop { background: #000b; }
+    .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--border); }
+    .detail-header h2 { margin: 0; font-size: 1.15rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-close { padding: 8px 13px; }
+    .detail-body { display: grid; grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr); gap: 20px; padding: 22px; }
+    .detail-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .detail-images figure { margin: 0; }
+    .detail-images img { display: block; width: 100%; aspect-ratio: 1; background: #080b0a; object-fit: contain; border-radius: 12px; }
+    .detail-images figcaption { margin-top: 8px; color: var(--muted); font-size: .9rem; }
+    .detail-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-content: start; }
+    .detail-stat { padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-light); }
+    .detail-stat span { display: block; color: var(--muted); font-size: .82rem; }
+    .detail-stat strong { display: block; margin-top: 5px; font-size: 1.3rem; }
     .secondary { background: var(--panel-light); color: var(--text); border: 1px solid var(--border); }
     @media (max-width: 760px) {
       main { padding: 36px 0; }
       .stats { grid-template-columns: repeat(2, 1fr); }
       .images { grid-template-columns: 1fr; }
       .actions { align-items: flex-start; flex-direction: column; }
+      .detail-body, .detail-images { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -699,12 +730,31 @@ PAGE_HTML = """<!doctype html>
       <p id="batch-errors" class="batch-errors" hidden></p>
       <div id="batch-thumbnails" class="batch-thumbnails"></div>
       <div class="batch-actions">
-        <button id="batch-cancel" class="secondary" type="button" hidden>Cancel after current image</button>
+        <button id="batch-cancel" class="secondary" type="button" hidden>Stop</button>
         <button id="batch-download" type="button" hidden>Download batch ZIP</button>
         <button id="batch-discard" class="secondary" type="button" hidden>Discard batch</button>
       </div>
     </section>
   </main>
+
+  <dialog id="batch-detail">
+    <div class="detail-header">
+      <h2 id="detail-title">Batch image</h2>
+      <button id="detail-close" class="secondary detail-close" type="button">Close</button>
+    </div>
+    <div class="detail-body">
+      <div class="detail-images">
+        <figure><img id="detail-original" alt="Original micrograph"><figcaption>Original</figcaption></figure>
+        <figure><img id="detail-overlay" alt="Segmentation overlay"><figcaption>Overlay</figcaption></figure>
+      </div>
+      <div class="detail-stats">
+        <div class="detail-stat"><span>Fiber</span><strong id="detail-fiber">—</strong></div>
+        <div class="detail-stat"><span>Resin</span><strong id="detail-resin">—</strong></div>
+        <div class="detail-stat"><span>Pore</span><strong id="detail-pore">—</strong></div>
+        <div class="detail-stat"><span>Unidentified</span><strong id="detail-unidentified">—</strong></div>
+      </div>
+    </div>
+  </dialog>
 
   <script>
     const input = document.querySelector("#file-input");
@@ -728,11 +778,18 @@ PAGE_HTML = """<!doctype html>
     const batchProgressTrack = document.querySelector("#batch-progress-track");
     const batchProgressBar = document.querySelector("#batch-progress-bar");
     const batchProgressLabel = document.querySelector("#batch-progress-label");
+    const batchDetail = document.querySelector("#batch-detail");
+    const detailTitle = document.querySelector("#detail-title");
+    const detailOriginal = document.querySelector("#detail-original");
+    const detailOverlay = document.querySelector("#detail-overlay");
+    const detailClose = document.querySelector("#detail-close");
     let selectedFiles = [];
     let previewUrl = null;
     let batchId = null;
     let cancelRequested = false;
     let batchSuccessfulCount = 0;
+    let detailUrls = [];
+    let detailRequestId = 0;
 
     function sessionHeaders(headers = {}) {
       const token = new URLSearchParams(window.location.search).get("token");
@@ -880,16 +937,66 @@ PAGE_HTML = """<!doctype html>
       batchSummary.textContent = `${summary.successful_images} successful image${summary.successful_images === 1 ? "" : "s"} · ${summary.total_pixels.toLocaleString()} analyzed pixels · pixel-weighted composition`;
     }
 
-    function addThumbnail(filename, dataUrl) {
+    function closeBatchDetail() {
+      detailRequestId += 1;
+      for (const url of detailUrls) URL.revokeObjectURL(url);
+      detailUrls = [];
+      detailOriginal.removeAttribute("src");
+      detailOverlay.removeAttribute("src");
+      if (batchDetail.open) batchDetail.close();
+    }
+
+    async function openBatchDetail(selectedIndex, resultIndex, filename, statistics) {
+      const original = selectedFiles[selectedIndex];
+      const activeBatchId = batchId;
+      if (!original || !activeBatchId) return;
+      closeBatchDetail();
+      const requestId = ++detailRequestId;
+      detailTitle.textContent = filename;
+      for (const name of ["fiber", "resin", "pore", "unidentified"]) {
+        document.querySelector(`#detail-${name}`).textContent = `${statistics[name].percent.toFixed(2)}%`;
+      }
+      const originalUrl = URL.createObjectURL(original);
+      detailUrls.push(originalUrl);
+      detailOriginal.src = originalUrl;
+      detailOverlay.removeAttribute("src");
+      batchDetail.showModal();
+      try {
+        const response = await fetch(`/batches/${activeBatchId}/images/${resultIndex}/overlay`, { headers: sessionHeaders() });
+        if (!response.ok) {
+          const payload = await response.json();
+          throw new Error(payload.detail || "Could not load the overlay.");
+        }
+        const overlayUrl = URL.createObjectURL(await response.blob());
+        if (requestId !== detailRequestId || !batchDetail.open) {
+          URL.revokeObjectURL(overlayUrl);
+          return;
+        }
+        detailUrls.push(overlayUrl);
+        detailOverlay.src = overlayUrl;
+      } catch (error) {
+        closeBatchDetail();
+        status.textContent = error.message;
+        status.className = "error";
+      }
+    }
+
+    function addThumbnail(selectedIndex, resultIndex, filename, dataUrl, statistics) {
       const card = document.createElement("article");
       card.className = "panel image-card";
+      const button = document.createElement("button");
+      button.className = "thumbnail-button";
+      button.type = "button";
+      button.setAttribute("aria-label", `Open details for ${filename}`);
       const image = document.createElement("img");
       image.src = dataUrl;
       image.alt = `Overlay for ${filename}`;
+      button.append(image);
+      button.addEventListener("click", () => openBatchDetail(selectedIndex, resultIndex, filename, statistics));
       const label = document.createElement("div");
       label.className = "image-meta";
       label.textContent = filename;
-      card.append(image, label);
+      card.append(button, label);
       batchThumbnails.append(card);
     }
 
@@ -903,6 +1010,8 @@ PAGE_HTML = """<!doctype html>
       batchErrors.hidden = true;
       batchErrors.textContent = "";
       batchCancel.hidden = false;
+      batchCancel.disabled = false;
+      batchCancel.textContent = "Stop";
       batchDownload.hidden = true;
       batchDiscard.hidden = true;
       cancelRequested = false;
@@ -937,7 +1046,7 @@ PAGE_HTML = """<!doctype html>
           }
           addBatchRow(payload.filename, payload.statistics.statistics, "Complete");
           setFileState(index, "Complete", "complete");
-          addThumbnail(payload.filename, payload.thumbnail_data_url);
+          addThumbnail(index, payload.result_index, payload.filename, payload.thumbnail_data_url, payload.statistics.statistics);
           showBatchSummary(payload.summary);
           batchSuccessfulCount += 1;
           updateBatchProgress(index + 1, selectedFiles.length, `${index + 1} of ${selectedFiles.length} complete`);
@@ -988,6 +1097,7 @@ PAGE_HTML = """<!doctype html>
 
     batchDiscard.addEventListener("click", async () => {
       if (!batchId) return;
+      closeBatchDetail();
       await fetch(`/batches/${batchId}`, { method: "DELETE", headers: sessionHeaders() });
       batchId = null;
       selectedFiles = [];
@@ -1009,6 +1119,15 @@ PAGE_HTML = """<!doctype html>
       }
       if (selectedFiles.length === 1) analyzeSingle(selectedFiles[0]);
       if (selectedFiles.length > 1) analyzeBatch();
+    });
+
+    detailClose.addEventListener("click", closeBatchDetail);
+    batchDetail.addEventListener("click", event => {
+      if (event.target === batchDetail) closeBatchDetail();
+    });
+    batchDetail.addEventListener("close", () => {
+      for (const url of detailUrls) URL.revokeObjectURL(url);
+      detailUrls = [];
     });
   </script>
 </body>
