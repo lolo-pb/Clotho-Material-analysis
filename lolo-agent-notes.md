@@ -79,7 +79,12 @@ The legacy `example-microg-processed/` folder is not used by the pipeline.
 
 # TODO
 
+- Desktop batch analysis keeps generated results only in memory until the user
+  discards them or closes the app; downloads create a ZIP without clearing the
+  batch. It has a 25-image limit but no byte-based memory limit yet. Add one if
+  larger batches create memory pressure.
+
 -youre in wsl. thers a folder in my outside machine in C:
   \lolo\dev\micrography-imgpro that has code like this, that one has code.
 
-- I want you to make a controller.py that can guide you from nothing to evrything as a python script that when run with nothein then prints what flags and thing to add to run other things and from there controll evrything and runn all the other scripts. it should also explain how to run the other scripts individually. it needs to be as simple as it can using simplifications as we did before like predict-configurable. but say if you want to set the things yourself use predict.py yk. explain to me all the comands it should have and flags and variations. 
+- I want you to make a controller.py that can guide you from nothing to evrything as a python script that when run with nothein then prints what flags and thing to add to run other things and from there controll evrything and runn all the other scripts. it should also explain how to run the other scripts individually. it needs to be as simple as it can using simplifications as we did before like predict-configurable. but say if you want to set the things yourself use predict.py yk. explain to me all the comands it should have and flags and variations.
