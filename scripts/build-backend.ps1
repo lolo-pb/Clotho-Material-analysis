@@ -19,7 +19,7 @@ Push-Location $ProjectRoot
 try {
     & $VenvPython -m PyInstaller --noconfirm --clean --onedir --name clotho-backend `
         --workpath backend/build --distpath backend/dist --specpath backend `
-        --add-data "checkpoints;checkpoints" `
+        --add-data "$ProjectRoot\checkpoints;checkpoints" `
         --collect-all torch --collect-all torchvision --collect-all cv2 --collect-all multipart `
         --hidden-import multipart.multipart `
         --hidden-import uvicorn.logging `
