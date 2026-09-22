@@ -95,6 +95,25 @@ The interface runs only on your computer. Uploaded images and generated
 results are not retained or written to the project output folders. Each upload
 is limited to 20 MiB and 25 megapixels.
 
+## Windows desktop installer
+
+The desktop release packages the existing web interface, the Python inference
+backend, and the pretrained model into one Windows installer. After it is
+installed, analysis runs locally and does not require Python or an internet
+connection.
+
+For a release build from Windows PowerShell, install Python 3.12 and Node 22,
+then run from the project root:
+
+```powershell
+./scripts/build-windows.ps1
+```
+
+The installer is written to `desktop/release/`. The same installer is built by
+the **Build Windows installer** GitHub Action: run it manually to download the
+workflow artifact, or push a `v*` tag to attach it to a GitHub Release. The
+first release is unsigned, so Windows may show a SmartScreen warning.
+
 ## Folders
 
 - `training/images/`: original pictures used to train the model.

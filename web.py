@@ -1,5 +1,6 @@
 """Small local web interface for fiberglass segmentation."""
 
+import argparse
 import base64
 import csv
 import io
@@ -13,6 +14,7 @@ from typing import Annotated
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))
 if __name__ == "__main__" and sys.prefix == sys.base_prefix:
     executable = "python.exe" if os.name == "nt" else "python"
     venv_python = PROJECT_ROOT / ".ven" / ("Scripts" if os.name == "nt" else "bin") / executable
@@ -34,7 +36,7 @@ from common.model import FiberglassUNet
 from predicting.predict import predict_image
 
 
-CHECKPOINT_PATH = PROJECT_ROOT / "checkpoints/final.pt"
+CHECKPOINT_PATH = RESOURCE_ROOT / "checkpoints/final.pt"
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 INFERENCE_LOCK = Lock()
@@ -65,6 +67,18 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+
+
+def require_session(request: Request) -> None:
+    token = getattr(request.app.state, "auth_token", None)
+    if token and request.headers.get("X-Clotho-Session") != token:
+        raise HTTPException(status_code=403, detail="Invalid local application session.")
+
+
+@app.get("/health")
+def health(request: Request) -> dict[str, str]:
+    require_session(request)
+    return {"status": "ready"}
 
 
 def decode_uploaded_image(data: bytes) -> np.ndarray:
@@ -145,6 +159,7 @@ def predict(
     request: Request,
     image: Annotated[UploadFile, File(description="Micrograph to segment")],
 ) -> dict[str, object]:
+    require_session(request)
     data = image.file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="The image exceeds the 20 MiB limit.")
@@ -375,7 +390,9 @@ PAGE_HTML = """<!doctype html>
       const form = new FormData();
       form.append("image", selectedFile);
       try {
-        const response = await fetch("/predict", { method: "POST", body: form });
+        const sessionToken = new URLSearchParams(window.location.search).get("token");
+        const headers = sessionToken ? { "X-Clotho-Session": sessionToken } : {};
+        const response = await fetch("/predict", { method: "POST", body: form, headers });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || "Prediction failed.");
 
@@ -406,4 +423,9 @@ PAGE_HTML = """<!doctype html>
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    parser = argparse.ArgumentParser(description="Run the Clotho local analysis server.")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--auth-token")
+    args = parser.parse_args()
+    app.state.auth_token = args.auth_token
+    uvicorn.run(app, host="127.0.0.1", port=args.port)

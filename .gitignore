@@ -1,6 +1,7 @@
 # Python virtual environments
 .ven/
 .venv/
+.build-venv/
 
 # Python cache
 __pycache__/
@@ -42,3 +43,10 @@ checkpoints/*
 
 # Ship the final trained model, but keep intermediate checkpoints local.
 !checkpoints/final.pt
+
+# Desktop packaging outputs
+backend/build/
+backend/dist/
+backend/*.spec
+desktop/node_modules/
+desktop/release/

@@ -30,11 +30,31 @@ def encode_test_image(height: int = 64, width: int = 80) -> bytes:
 
 
 def request_with_model() -> SimpleNamespace:
-    state = SimpleNamespace(model=ConstantModel(), device=torch.device("cpu"))
+    state = SimpleNamespace(
+        model=ConstantModel(),
+        device=torch.device("cpu"),
+        auth_token=None,
+    )
     return SimpleNamespace(app=SimpleNamespace(state=state))
 
 
 class WebTests(unittest.TestCase):
+    def tearDown(self):
+        web.app.state.auth_token = None
+
+    def test_health_requires_the_configured_local_session(self):
+        web.app.state.auth_token = "desktop-token"
+        request = SimpleNamespace(
+            app=web.app,
+            headers={"X-Clotho-Session": "desktop-token"},
+        )
+        self.assertEqual(web.health(request), {"status": "ready"})
+
+        request.headers = {}
+        with self.assertRaises(HTTPException) as raised:
+            web.health(request)
+        self.assertEqual(raised.exception.status_code, 403)
+
     def test_home_contains_upload_and_result_controls(self):
         html = web.home()
         self.assertIn('id="file-input"', html)
@@ -66,6 +86,16 @@ class WebTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertIn("pore_pixels,pore_percent", lines[0])
         self.assertIn("5120,100.000000", lines[1])
+
+    def test_prediction_requires_the_configured_local_session(self):
+        request = request_with_model()
+        request.app.state.auth_token = "desktop-token"
+        request.headers = {}
+        upload = UploadFile(file=io.BytesIO(encode_test_image()), filename="sample.png")
+
+        with self.assertRaises(HTTPException) as raised:
+            web.predict(request, upload)
+        self.assertEqual(raised.exception.status_code, 403)
 
     def test_empty_and_unreadable_uploads_are_rejected(self):
         for data in (b"", b"not an image"):
