@@ -81,7 +81,7 @@ The legacy `example-microg-processed/` folder is not used by the pipeline.
 
 - Desktop batch analysis keeps generated results only in memory until the user discards them or closes the app; downloads create a ZIP without clearing the batch. It has a 25-image limit but no byte-based memory limit yet. Add one if larger batches create memory pressure.
 
-- a way to know that images have been loaded in or files selected.
+- a way to know that images have been uploaded or files selected.
 
 - an actuall progress bar while processing
 
