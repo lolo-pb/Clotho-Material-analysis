@@ -95,6 +95,11 @@ The interface runs only on your computer. Uploaded images and generated
 results are not retained or written to the project output folders. Each upload
 is limited to 20 MiB and 25 megapixels.
 
+You can also select up to 25 images for a batch. The app processes them one at
+a time, shows per-image results and batch statistics, and keeps masks,
+overlays, and CSV data only in memory. Choose **Download batch ZIP** to save
+the generated outputs, or **Discard batch** to clear them without saving.
+
 ## Windows desktop installer
 
 The desktop release packages the existing web interface, the Python inference
