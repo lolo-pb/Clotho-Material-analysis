@@ -617,8 +617,14 @@ PAGE_HTML = """<!doctype html>
     .batch-table td:last-child { text-align: right; }
     .batch-errors { color: var(--error); margin: 18px 0; }
     .batch-thumbnails { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; margin-top: 22px; }
+    .batch-thumbnails .image-card { overflow: visible; }
     .batch-thumbnails img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #080b0a; border-radius: 12px; }
-    .thumbnail-button { display: block; width: 100%; padding: 0; border: 0; border-radius: 12px; background: transparent; cursor: pointer; }
+    .thumbnail-button { position: relative; display: block; width: 100%; padding: 0; overflow: hidden; border: 1px solid transparent; border-radius: 12px; background: transparent; cursor: pointer; transition: border-color .2s, transform .2s; }
+    .thumbnail-button::after { content: "Open details"; position: absolute; inset: auto 10px 10px; padding: 8px 10px; border-radius: 999px; background: #092016e8; color: var(--accent); font: inherit; font-size: .82rem; font-weight: 800; opacity: 0; transform: translateY(6px); transition: opacity .2s, transform .2s; }
+    .thumbnail-button img { transition: transform .2s; }
+    .thumbnail-button:hover, .thumbnail-button:focus-visible { border-color: var(--accent); transform: translateY(-2px); }
+    .thumbnail-button:hover::after, .thumbnail-button:focus-visible::after { opacity: 1; transform: translateY(0); }
+    .thumbnail-button:hover img, .thumbnail-button:focus-visible img { transform: scale(1.03); }
     .thumbnail-button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
     .batch-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
     .progress { margin: 0 0 24px; }
