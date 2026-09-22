@@ -85,6 +85,11 @@ The legacy `example-microg-processed/` folder is not used by the pipeline.
 
 - an actuall progress bar while processing
 
-- when i click an overlay i would like the thing to open a page or popup showing the original image and the overlay side by side (unless the original has already been discarded then just the overlay with its corresponding statistics on the side with similar display as the ones in the total statistics shown in them main page)
+- Let users click a batch overlay to open an in-app modal. Show the original
+  beside the overlay and the four composition cards; after the original is no
+  longer available, show the overlay and its statistics alone.
 
-- then i hould like to show a graph showing the distributions of each category for all the images, but im not sure where to put it. and maybe add other usefull analytics
+- Add four box-and-strip plots after the batch composition cards and before the
+  image table. Plot each image's fiber, resin, pore, and unidentified
+  percentage to show spread, median, and outliers. Wait for sample or
+  magnification grouping before adding further comparative analytics.
