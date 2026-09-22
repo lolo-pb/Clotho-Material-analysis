@@ -1,6 +1,8 @@
+import asyncio
 import base64
 import io
 import unittest
+import zipfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -38,9 +40,23 @@ def request_with_model() -> SimpleNamespace:
     return SimpleNamespace(app=SimpleNamespace(state=state))
 
 
+class RawRequest:
+    def __init__(self, request: SimpleNamespace, data: bytes, filename: str):
+        self.app = request.app
+        self.headers = {
+            "X-Clotho-Filename": filename,
+            "X-Clotho-Session": getattr(request.app.state, "auth_token", None),
+        }
+        self._data = data
+
+    async def stream(self):
+        yield self._data
+
+
 class WebTests(unittest.TestCase):
     def tearDown(self):
         web.app.state.auth_token = None
+        web.BATCH_SESSIONS.clear()
 
     def test_health_requires_the_configured_local_session(self):
         web.app.state.auth_token = "desktop-token"
@@ -96,6 +112,69 @@ class WebTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             web.predict(request, upload)
         self.assertEqual(raised.exception.status_code, 403)
+
+    def test_batch_keeps_results_in_memory_and_downloads_a_zip(self):
+        request = request_with_model()
+        created = web.create_batch(request)
+        batch_id = created["batch_id"]
+        upload = RawRequest(request, encode_test_image(), "sample image.png")
+
+        result = asyncio.run(web.add_batch_image(batch_id, upload))
+
+        self.assertEqual(result["filename"], "sample image.png")
+        self.assertEqual(result["summary"]["successful_images"], 1)
+        self.assertEqual(len(web.BATCH_SESSIONS[batch_id].results), 1)
+        self.assertTrue(result["thumbnail_data_url"].startswith("data:image/png;base64,"))
+
+        archive = web.download_batch(batch_id, request)
+        with zipfile.ZipFile(io.BytesIO(archive.body)) as downloaded:
+            self.assertEqual(
+                set(downloaded.namelist()),
+                {
+                    "masks/001-sample image-mask.png",
+                    "overlays/001-sample image-overlay.png",
+                    "statistics.csv",
+                    "batch-summary.csv",
+                    "image-variation.csv",
+                },
+            )
+            self.assertIn("sample image.png", downloaded.read("statistics.csv").decode())
+        self.assertIn(batch_id, web.BATCH_SESSIONS)
+
+    def test_batch_records_invalid_image_and_keeps_processing(self):
+        request = request_with_model()
+        batch_id = web.create_batch(request)["batch_id"]
+        bad_upload = RawRequest(request, b"not an image", "bad.png")
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(web.add_batch_image(batch_id, bad_upload))
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(web.BATCH_SESSIONS[batch_id].errors[0]["filename"], "bad.png")
+
+        good_upload = RawRequest(request, encode_test_image(), "good.png")
+        result = asyncio.run(web.add_batch_image(batch_id, good_upload))
+        self.assertEqual(result["summary"]["successful_images"], 1)
+        self.assertEqual(result["summary"]["failed_images"], 1)
+
+    def test_batch_upload_size_limit_is_recorded_as_a_failure(self):
+        request = request_with_model()
+        batch_id = web.create_batch(request)["batch_id"]
+        with patch.object(web, "MAX_UPLOAD_BYTES", 8):
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(web.add_batch_image(batch_id, RawRequest(request, b"123456789", "large.png")))
+        self.assertEqual(raised.exception.status_code, 413)
+        self.assertEqual(web.BATCH_SESSIONS[batch_id].errors[0]["filename"], "large.png")
+
+    def test_cancelled_batch_rejects_the_next_image_and_can_be_discarded(self):
+        request = request_with_model()
+        batch_id = web.create_batch(request)["batch_id"]
+        self.assertEqual(web.cancel_batch(batch_id, request), {"cancelled": True})
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(web.add_batch_image(batch_id, RawRequest(request, encode_test_image(), "sample.png")))
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(web.discard_batch(batch_id, request), {"discarded": True})
+        self.assertNotIn(batch_id, web.BATCH_SESSIONS)
 
     def test_empty_and_unreadable_uploads_are_rejected(self):
         for data in (b"", b"not an image"):

@@ -7,10 +7,14 @@ import io
 import logging
 import os
 import sys
+import uuid
+import zipfile
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Annotated
+from urllib.parse import unquote
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -29,7 +33,7 @@ import numpy as np
 import torch
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from common.labels import CLASS_NAMES, decode_mask
 from common.model import FiberglassUNet
@@ -39,8 +43,38 @@ from predicting.predict import predict_image
 CHECKPOINT_PATH = RESOURCE_ROOT / "checkpoints/final.pt"
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
+MAX_BATCH_IMAGES = 25
 INFERENCE_LOCK = Lock()
+BATCH_LOCK = Lock()
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class BatchResult:
+    filename: str
+    width: int
+    height: int
+    statistics: dict[str, object]
+    mask_png: bytes
+    overlay_png: bytes
+    thumbnail_data_url: str
+
+
+@dataclass
+class BatchSession:
+    submitted_count: int = 0
+    cancelled: bool = False
+    results: list[BatchResult] = field(default_factory=list)
+    errors: list[dict[str, str]] = field(default_factory=list)
+
+
+BATCH_SESSIONS: dict[str, BatchSession] = {}
+
+
+class BatchInputError(ValueError):
+    def __init__(self, detail: str, status_code: int):
+        super().__init__(detail)
+        self.status_code = status_code
 
 
 def load_model() -> tuple[FiberglassUNet, torch.device]:
@@ -94,12 +128,28 @@ def decode_uploaded_image(data: bytes) -> np.ndarray:
 
 
 def png_data_url(image_rgb: np.ndarray) -> str:
+    payload = base64.b64encode(png_bytes(image_rgb)).decode("ascii")
+    return f"data:image/png;base64,{payload}"
+
+
+def png_bytes(image_rgb: np.ndarray) -> bytes:
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     success, encoded = cv2.imencode(".png", image_bgr)
     if not success:
         raise RuntimeError("Could not encode prediction image.")
-    payload = base64.b64encode(encoded.tobytes()).decode("ascii")
-    return f"data:image/png;base64,{payload}"
+    return encoded.tobytes()
+
+
+def thumbnail_data_url(image_rgb: np.ndarray) -> str:
+    height, width = image_rgb.shape[:2]
+    scale = min(1, 280 / max(height, width))
+    if scale < 1:
+        image_rgb = cv2.resize(
+            image_rgb,
+            (round(width * scale), round(height * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+    return png_data_url(image_rgb)
 
 
 def calculate_statistics(class_ids: np.ndarray) -> dict[str, object]:
@@ -149,9 +199,272 @@ def analyze_image(
     }
 
 
+def analyze_batch_image(
+    model: torch.nn.Module,
+    device: torch.device,
+    image_rgb: np.ndarray,
+) -> tuple[dict[str, object], bytes, bytes, str]:
+    class_ids = predict_image(model, image_rgb, device)
+    mask = decode_mask(class_ids)
+    overlay = cv2.addWeighted(image_rgb, 0.55, mask, 0.45, 0)
+    return (
+        calculate_statistics(class_ids),
+        png_bytes(mask),
+        png_bytes(overlay),
+        thumbnail_data_url(overlay),
+    )
+
+
+def batch_session_or_404(batch_id: str) -> BatchSession:
+    with BATCH_LOCK:
+        session = BATCH_SESSIONS.get(batch_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Batch not found or already discarded.")
+    return session
+
+
+def batch_filename(filename: str | None, image_number: int) -> str:
+    candidate = Path(unquote(filename or "").replace("\\", "/")).name.strip()
+    return candidate or f"image-{image_number}.png"
+
+
+def record_batch_error(session: BatchSession, filename: str, detail: str) -> None:
+    with BATCH_LOCK:
+        session.errors.append({"filename": filename, "error": detail})
+
+
+async def read_batch_upload(request: Request) -> bytes:
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise BatchInputError("The image exceeds the 20 MiB limit.", 413)
+    return bytes(data)
+
+
+def batch_summary(session: BatchSession) -> dict[str, object]:
+    if not session.results:
+        return {"successful_images": 0, "failed_images": len(session.errors), "statistics": {}}
+
+    total_pixels = sum(int(result.statistics["total_pixels"]) for result in session.results)
+    totals = {
+        name: sum(
+            int(result.statistics["statistics"][name]["pixels"])
+            for result in session.results
+        )
+        for name in CLASS_NAMES
+    }
+    variation = {}
+    for name in CLASS_NAMES:
+        percentages = np.asarray(
+            [result.statistics["statistics"][name]["percent"] for result in session.results],
+            dtype=float,
+        )
+        variation[name] = {
+            "mean_percent": float(np.mean(percentages)),
+            "std_percent": float(np.std(percentages, ddof=1)) if len(percentages) > 1 else 0.0,
+            "median_percent": float(np.median(percentages)),
+            "min_percent": float(np.min(percentages)),
+            "max_percent": float(np.max(percentages)),
+        }
+    return {
+        "successful_images": len(session.results),
+        "failed_images": len(session.errors),
+        "total_pixels": total_pixels,
+        "statistics": {
+            name: {
+                "pixels": totals[name],
+                "percent": float(totals[name] / total_pixels * 100),
+            }
+            for name in CLASS_NAMES
+        },
+        "variation": variation,
+    }
+
+
+def batch_csv_bytes(session: BatchSession) -> dict[str, bytes]:
+    image_output = io.StringIO(newline="")
+    image_fields = ["filename", "width", "height", "total_pixels"]
+    for name in CLASS_NAMES:
+        image_fields.extend((f"{name}_pixels", f"{name}_percent"))
+    image_writer = csv.DictWriter(image_output, fieldnames=image_fields)
+    image_writer.writeheader()
+    for result in session.results:
+        row = {
+            "filename": result.filename,
+            "width": result.width,
+            "height": result.height,
+            "total_pixels": result.statistics["total_pixels"],
+        }
+        for name in CLASS_NAMES:
+            values = result.statistics["statistics"][name]
+            row[f"{name}_pixels"] = values["pixels"]
+            row[f"{name}_percent"] = f"{values['percent']:.6f}"
+        image_writer.writerow(row)
+
+    summary = batch_summary(session)
+    summary_output = io.StringIO(newline="")
+    summary_fields = ["successful_images", "failed_images", "total_pixels"]
+    for name in CLASS_NAMES:
+        summary_fields.extend((f"{name}_pixels", f"{name}_percent"))
+    summary_writer = csv.DictWriter(summary_output, fieldnames=summary_fields)
+    summary_writer.writeheader()
+    summary_row = {
+        "successful_images": summary["successful_images"],
+        "failed_images": summary["failed_images"],
+        "total_pixels": summary.get("total_pixels", 0),
+    }
+    for name in CLASS_NAMES:
+        values = summary["statistics"].get(name, {"pixels": 0, "percent": 0.0})
+        summary_row[f"{name}_pixels"] = values["pixels"]
+        summary_row[f"{name}_percent"] = f"{values['percent']:.6f}"
+    summary_writer.writerow(summary_row)
+
+    variation_output = io.StringIO(newline="")
+    variation_writer = csv.DictWriter(
+        variation_output,
+        fieldnames=(
+            "class",
+            "image_count",
+            "mean_percent",
+            "std_percent",
+            "median_percent",
+            "min_percent",
+            "max_percent",
+        ),
+    )
+    variation_writer.writeheader()
+    for name in CLASS_NAMES:
+        values = summary.get("variation", {}).get(name)
+        if values:
+            variation_writer.writerow({"class": name, "image_count": summary["successful_images"], **values})
+
+    files = {
+        "statistics.csv": image_output.getvalue().encode("utf-8"),
+        "batch-summary.csv": summary_output.getvalue().encode("utf-8"),
+        "image-variation.csv": variation_output.getvalue().encode("utf-8"),
+    }
+    if session.errors:
+        error_output = io.StringIO(newline="")
+        error_writer = csv.DictWriter(error_output, fieldnames=("filename", "error"))
+        error_writer.writeheader()
+        error_writer.writerows(session.errors)
+        files["errors.csv"] = error_output.getvalue().encode("utf-8")
+    return files
+
+
 @app.get("/", response_class=HTMLResponse)
 def home() -> str:
     return PAGE_HTML
+
+
+@app.post("/batches")
+def create_batch(request: Request) -> dict[str, object]:
+    require_session(request)
+    batch_id = uuid.uuid4().hex
+    with BATCH_LOCK:
+        BATCH_SESSIONS[batch_id] = BatchSession()
+    return {"batch_id": batch_id, "maximum_images": MAX_BATCH_IMAGES}
+
+
+@app.post("/batches/{batch_id}/cancel")
+def cancel_batch(batch_id: str, request: Request) -> dict[str, bool]:
+    require_session(request)
+    session = batch_session_or_404(batch_id)
+    with BATCH_LOCK:
+        session.cancelled = True
+    return {"cancelled": True}
+
+
+@app.delete("/batches/{batch_id}")
+def discard_batch(batch_id: str, request: Request) -> dict[str, bool]:
+    require_session(request)
+    with BATCH_LOCK:
+        if BATCH_SESSIONS.pop(batch_id, None) is None:
+            raise HTTPException(status_code=404, detail="Batch not found or already discarded.")
+    return {"discarded": True}
+
+
+@app.post("/batches/{batch_id}/images")
+async def add_batch_image(batch_id: str, request: Request) -> dict[str, object]:
+    require_session(request)
+    session = batch_session_or_404(batch_id)
+    with BATCH_LOCK:
+        if session.cancelled:
+            raise HTTPException(status_code=409, detail="The batch was cancelled.")
+        if session.submitted_count >= MAX_BATCH_IMAGES:
+            raise HTTPException(status_code=413, detail="A batch can contain at most 25 images.")
+        session.submitted_count += 1
+        image_number = session.submitted_count
+
+    filename = batch_filename(request.headers.get("X-Clotho-Filename"), image_number)
+    try:
+        data = await read_batch_upload(request)
+        image_rgb = decode_uploaded_image(data)
+        height, width = image_rgb.shape[:2]
+        if height * width > MAX_IMAGE_PIXELS:
+            raise BatchInputError("The image is larger than the 25-megapixel limit.", 413)
+        with INFERENCE_LOCK:
+            statistics, mask_png, overlay_png, thumbnail = analyze_batch_image(
+                request.app.state.model,
+                request.app.state.device,
+                image_rgb,
+            )
+    except BatchInputError as error:
+        record_batch_error(session, filename, str(error))
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+    except ValueError as error:
+        record_batch_error(session, filename, str(error))
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        LOGGER.exception("Batch prediction failed")
+        detail = "Prediction failed. Check the server terminal for details."
+        record_batch_error(session, filename, detail)
+        raise HTTPException(status_code=500, detail=detail) from error
+
+    result = BatchResult(
+        filename=filename,
+        width=width,
+        height=height,
+        statistics=statistics,
+        mask_png=mask_png,
+        overlay_png=overlay_png,
+        thumbnail_data_url=thumbnail,
+    )
+    with BATCH_LOCK:
+        session.results.append(result)
+        summary = batch_summary(session)
+    return {
+        "filename": filename,
+        "width": width,
+        "height": height,
+        "statistics": statistics,
+        "thumbnail_data_url": thumbnail,
+        "summary": summary,
+    }
+
+
+@app.get("/batches/{batch_id}/download")
+def download_batch(batch_id: str, request: Request) -> Response:
+    require_session(request)
+    session = batch_session_or_404(batch_id)
+    with BATCH_LOCK:
+        if not session.results:
+            raise HTTPException(status_code=400, detail="The batch has no successful images to download.")
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+            for index, result in enumerate(session.results, start=1):
+                stem = Path(result.filename).stem
+                prefix = f"{index:03d}-{stem}"
+                output.writestr(f"masks/{prefix}-mask.png", result.mask_png)
+                output.writestr(f"overlays/{prefix}-overlay.png", result.overlay_png)
+            for filename, content in batch_csv_bytes(session).items():
+                output.writestr(filename, content)
+    return Response(
+        archive.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=clotho-batch-results.zip"},
+    )
 
 
 @app.post("/predict")
@@ -276,6 +589,15 @@ PAGE_HTML = """<!doctype html>
     .image-meta h3 { margin: 0; font-size: .95rem; }
     .download { padding: 8px 13px; font-size: .8rem; }
     .result-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
+    .batch-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    .batch-table th, .batch-table td { padding: 10px; border-bottom: 1px solid var(--border); text-align: left; }
+    .batch-table th { color: var(--muted); font-weight: 700; }
+    .batch-table td:last-child { text-align: right; }
+    .batch-errors { color: var(--error); margin: 18px 0; }
+    .batch-thumbnails { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; margin-top: 22px; }
+    .batch-thumbnails img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #080b0a; border-radius: 12px; }
+    .batch-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
+    .secondary { background: var(--panel-light); color: var(--text); border: 1px solid var(--border); }
     @media (max-width: 760px) {
       main { padding: 36px 0; }
       .stats { grid-template-columns: repeat(2, 1fr); }
@@ -289,16 +611,16 @@ PAGE_HTML = """<!doctype html>
     <header>
       <div class="eyebrow">Clotho · Material analysis</div>
       <h1>See what your material is made of.</h1>
-      <p>Upload a fiberglass micrograph to identify fiber, resin, pore, and unidentified regions. Your image is processed locally and is not retained.</p>
+      <p>Upload one or a batch of fiberglass micrographs to identify fiber, resin, pore, and unidentified regions. Images are processed locally and are not retained.</p>
     </header>
 
     <section class="panel upload-panel">
       <label class="dropzone" id="dropzone">
-        <input id="file-input" type="file" accept="image/jpeg,image/png,image/bmp,image/tiff,image/webp">
+        <input id="file-input" type="file" multiple accept="image/jpeg,image/png,image/bmp,image/tiff,image/webp">
         <span>
           <span class="upload-icon">↥</span>
-          <strong>Drop a micrograph here or choose a file</strong>
-          <small>JPEG, PNG, BMP, TIFF, or WebP · maximum 20 MiB</small>
+          <strong>Drop micrographs here or choose files</strong>
+          <small>JPEG, PNG, BMP, TIFF, or WebP · maximum 20 MiB each, up to 25 images</small>
           <span id="file-name">No image selected</span>
         </span>
       </label>
@@ -337,6 +659,31 @@ PAGE_HTML = """<!doctype html>
         <a class="download" id="csv-download" download="segmentation-statistics.csv">Download statistics CSV</a>
       </div>
     </section>
+
+    <section id="batch-results" hidden>
+      <h2>Batch composition</h2>
+      <div class="stats">
+        <div class="stat" style="--class-color:#ff5d5d"><span>Fiber</span><strong id="batch-fiber">—</strong></div>
+        <div class="stat" style="--class-color:#55d889"><span>Resin</span><strong id="batch-resin">—</strong></div>
+        <div class="stat" style="--class-color:#668cff"><span>Pore</span><strong id="batch-pore">—</strong></div>
+        <div class="stat" style="--class-color:#69736f"><span>Unidentified</span><strong id="batch-unidentified">—</strong></div>
+      </div>
+      <p id="batch-summary" style="color:var(--muted)"></p>
+      <h2>Images</h2>
+      <div class="panel" style="overflow-x:auto">
+        <table class="batch-table">
+          <thead><tr><th>Image</th><th>Fiber</th><th>Resin</th><th>Pore</th><th>Unidentified</th><th>Status</th></tr></thead>
+          <tbody id="batch-rows"></tbody>
+        </table>
+      </div>
+      <p id="batch-errors" class="batch-errors" hidden></p>
+      <div id="batch-thumbnails" class="batch-thumbnails"></div>
+      <div class="batch-actions">
+        <button id="batch-cancel" class="secondary" type="button" hidden>Cancel after current image</button>
+        <button id="batch-download" type="button" hidden>Download batch ZIP</button>
+        <button id="batch-discard" class="secondary" type="button" hidden>Discard batch</button>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -347,24 +694,58 @@ PAGE_HTML = """<!doctype html>
     const analyze = document.querySelector("#analyze");
     const status = document.querySelector("#status");
     const results = document.querySelector("#results");
-    let selectedFile = null;
+    const batchResults = document.querySelector("#batch-results");
+    const batchRows = document.querySelector("#batch-rows");
+    const batchThumbnails = document.querySelector("#batch-thumbnails");
+    const batchSummary = document.querySelector("#batch-summary");
+    const batchErrors = document.querySelector("#batch-errors");
+    const batchCancel = document.querySelector("#batch-cancel");
+    const batchDownload = document.querySelector("#batch-download");
+    const batchDiscard = document.querySelector("#batch-discard");
+    let selectedFiles = [];
     let previewUrl = null;
+    let batchId = null;
+    let cancelRequested = false;
+    let batchSuccessfulCount = 0;
 
-    function chooseFile(file) {
-      if (!file) return;
-      selectedFile = file;
+    function sessionHeaders(headers = {}) {
+      const token = new URLSearchParams(window.location.search).get("token");
+      return token ? { ...headers, "X-Clotho-Session": token } : headers;
+    }
+
+    function chooseFiles(files) {
+      const chosen = Array.from(files || []);
+      if (!chosen.length) return;
+      if (batchId) {
+        status.textContent = "Download or discard the current batch before choosing another one.";
+        status.className = "error";
+        return;
+      }
+      if (chosen.length > 25) {
+        status.textContent = "Choose at most 25 images in one batch.";
+        status.className = "error";
+        return;
+      }
+      selectedFiles = chosen;
       if (previewUrl) URL.revokeObjectURL(previewUrl);
-      previewUrl = URL.createObjectURL(file);
-      preview.src = previewUrl;
-      preview.style.display = "block";
-      fileName.textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MiB`;
+      if (chosen.length === 1) {
+        previewUrl = URL.createObjectURL(chosen[0]);
+        preview.src = previewUrl;
+        preview.style.display = "block";
+        fileName.textContent = `${chosen[0].name} · ${(chosen[0].size / 1024 / 1024).toFixed(2)} MiB`;
+      } else {
+        preview.src = "";
+        preview.style.display = "none";
+        fileName.textContent = `${chosen.length} images selected`;
+      }
       analyze.disabled = false;
       results.hidden = true;
-      status.textContent = "Ready to analyze.";
+      batchResults.hidden = true;
+      status.textContent = chosen.length === 1 ? "Ready to analyze." : "Ready to analyze this batch.";
       status.className = "";
     }
 
-    input.addEventListener("change", () => chooseFile(input.files[0]));
+    input.addEventListener("change", () => chooseFiles(input.files));
     for (const eventName of ["dragenter", "dragover"]) {
       dropzone.addEventListener(eventName, event => {
         event.preventDefault();
@@ -377,10 +758,9 @@ PAGE_HTML = """<!doctype html>
         dropzone.classList.remove("dragging");
       });
     }
-    dropzone.addEventListener("drop", event => chooseFile(event.dataTransfer.files[0]));
+    dropzone.addEventListener("drop", event => chooseFiles(event.dataTransfer.files));
 
-    analyze.addEventListener("click", async () => {
-      if (!selectedFile) return;
+    async function analyzeSingle(file) {
       analyze.disabled = true;
       analyze.textContent = "Analyzing…";
       status.textContent = "Running the segmentation model. This can take a few seconds.";
@@ -388,11 +768,9 @@ PAGE_HTML = """<!doctype html>
       results.hidden = true;
 
       const form = new FormData();
-      form.append("image", selectedFile);
+      form.append("image", file);
       try {
-        const sessionToken = new URLSearchParams(window.location.search).get("token");
-        const headers = sessionToken ? { "X-Clotho-Session": sessionToken } : {};
-        const response = await fetch("/predict", { method: "POST", body: form, headers });
+        const response = await fetch("/predict", { method: "POST", body: form, headers: sessionHeaders() });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || "Prediction failed.");
 
@@ -415,6 +793,139 @@ PAGE_HTML = """<!doctype html>
         analyze.disabled = false;
         analyze.textContent = "Analyze image";
       }
+    }
+
+    function addBatchRow(filename, statistics, state) {
+      const row = document.createElement("tr");
+      const cells = [filename, ...["fiber", "resin", "pore", "unidentified"].map(name => statistics ? `${statistics[name].percent.toFixed(2)}%` : "—"), state];
+      for (const value of cells) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.append(cell);
+      }
+      batchRows.append(row);
+    }
+
+    function showBatchSummary(summary) {
+      if (!summary.statistics || !summary.successful_images) return;
+      for (const name of ["fiber", "resin", "pore", "unidentified"]) {
+        document.querySelector(`#batch-${name}`).textContent = `${summary.statistics[name].percent.toFixed(2)}%`;
+      }
+      batchSummary.textContent = `${summary.successful_images} successful image${summary.successful_images === 1 ? "" : "s"} · ${summary.total_pixels.toLocaleString()} analyzed pixels · pixel-weighted composition`;
+    }
+
+    function addThumbnail(filename, dataUrl) {
+      const card = document.createElement("article");
+      card.className = "panel image-card";
+      const image = document.createElement("img");
+      image.src = dataUrl;
+      image.alt = `Overlay for ${filename}`;
+      const label = document.createElement("div");
+      label.className = "image-meta";
+      label.textContent = filename;
+      card.append(image, label);
+      batchThumbnails.append(card);
+    }
+
+    async function analyzeBatch() {
+      analyze.disabled = true;
+      analyze.textContent = "Analyzing batch…";
+      results.hidden = true;
+      batchResults.hidden = false;
+      batchRows.replaceChildren();
+      batchThumbnails.replaceChildren();
+      batchErrors.hidden = true;
+      batchErrors.textContent = "";
+      batchCancel.hidden = false;
+      batchDownload.hidden = true;
+      batchDiscard.hidden = true;
+      cancelRequested = false;
+      batchSuccessfulCount = 0;
+
+      try {
+        const created = await fetch("/batches", { method: "POST", headers: sessionHeaders() });
+        const payload = await created.json();
+        if (!created.ok) throw new Error(payload.detail || "Could not create batch.");
+        batchId = payload.batch_id;
+
+        for (let index = 0; index < selectedFiles.length; index += 1) {
+          if (cancelRequested) break;
+          const file = selectedFiles[index];
+          status.textContent = `Analyzing ${index + 1} of ${selectedFiles.length}: ${file.name}`;
+          const response = await fetch(`/batches/${batchId}/images`, {
+            method: "POST",
+            headers: sessionHeaders({ "Content-Type": "application/octet-stream", "X-Clotho-Filename": encodeURIComponent(file.name) }),
+            body: file,
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            addBatchRow(file.name, null, "Failed");
+            batchErrors.hidden = false;
+            batchErrors.textContent += `${file.name}: ${payload.detail || "Processing failed."} `;
+            continue;
+          }
+          addBatchRow(payload.filename, payload.statistics.statistics, "Complete");
+          addThumbnail(payload.filename, payload.thumbnail_data_url);
+          showBatchSummary(payload.summary);
+          batchSuccessfulCount += 1;
+        }
+
+        const completed = batchRows.querySelectorAll("tr").length;
+        status.textContent = cancelRequested ? `Batch cancelled after ${completed} image${completed === 1 ? "" : "s"}.` : `Batch complete: ${completed} image${completed === 1 ? "" : "s"} processed.`;
+        batchDownload.hidden = batchSuccessfulCount === 0;
+        batchDiscard.hidden = false;
+      } catch (error) {
+        status.textContent = error.message;
+        status.className = "error";
+        if (batchId) batchDiscard.hidden = false;
+      } finally {
+        batchCancel.hidden = true;
+        analyze.disabled = false;
+        analyze.textContent = "Analyze image";
+      }
+    }
+
+    batchCancel.addEventListener("click", async () => {
+      cancelRequested = true;
+      batchCancel.disabled = true;
+      batchCancel.textContent = "Cancelling…";
+      if (batchId) await fetch(`/batches/${batchId}/cancel`, { method: "POST", headers: sessionHeaders() });
+    });
+
+    batchDownload.addEventListener("click", async () => {
+      try {
+        const response = await fetch(`/batches/${batchId}/download`, { headers: sessionHeaders() });
+        if (!response.ok) {
+          const payload = await response.json();
+          throw new Error(payload.detail || "Could not create the batch download.");
+        }
+        const url = URL.createObjectURL(await response.blob());
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "clotho-batch-results.zip";
+        link.click();
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        status.textContent = error.message;
+        status.className = "error";
+      }
+    });
+
+    batchDiscard.addEventListener("click", async () => {
+      if (!batchId) return;
+      await fetch(`/batches/${batchId}`, { method: "DELETE", headers: sessionHeaders() });
+      batchId = null;
+      selectedFiles = [];
+      input.value = "";
+      batchResults.hidden = true;
+      fileName.textContent = "No image selected";
+      status.textContent = "Batch discarded.";
+      status.className = "";
+    });
+
+    analyze.addEventListener("click", () => {
+      if (selectedFiles.length === 1) analyzeSingle(selectedFiles[0]);
+      if (selectedFiles.length > 1) analyzeBatch();
     });
   </script>
 </body>
