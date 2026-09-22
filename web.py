@@ -589,6 +589,14 @@ PAGE_HTML = """<!doctype html>
     .image-meta h3 { margin: 0; font-size: .95rem; }
     .download { padding: 8px 13px; font-size: .8rem; }
     .result-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
+    .selection { margin-top: 18px; }
+    .selection-header { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: .9rem; }
+    .selection-list { max-height: 210px; margin: 10px 0 0; padding: 0; overflow-y: auto; border-top: 1px solid var(--border); list-style: none; }
+    .selection-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--border); font-size: .9rem; }
+    .selection-list .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .selection-list .size, .selection-list .state { color: var(--muted); }
+    .selection-list .state.complete { color: var(--accent); }
+    .selection-list .state.failed { color: var(--error); }
     .batch-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
     .batch-table th, .batch-table td { padding: 10px; border-bottom: 1px solid var(--border); text-align: left; }
     .batch-table th { color: var(--muted); font-weight: 700; }
@@ -597,6 +605,10 @@ PAGE_HTML = """<!doctype html>
     .batch-thumbnails { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; margin-top: 22px; }
     .batch-thumbnails img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #080b0a; border-radius: 12px; }
     .batch-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
+    .progress { margin: 0 0 24px; }
+    .progress-track { height: 10px; overflow: hidden; border-radius: 99px; background: var(--panel-light); }
+    .progress-bar { width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .2s ease; }
+    .progress-label { margin: 9px 0 0; color: var(--muted); font-size: .9rem; }
     .secondary { background: var(--panel-light); color: var(--text); border: 1px solid var(--border); }
     @media (max-width: 760px) {
       main { padding: 36px 0; }
@@ -625,6 +637,10 @@ PAGE_HTML = """<!doctype html>
         </span>
       </label>
       <img class="preview" id="preview" alt="Selected micrograph preview">
+      <div id="selection" class="selection" hidden>
+        <div class="selection-header"><strong>Selected images</strong><span id="selection-total"></span></div>
+        <ul id="selection-list" class="selection-list"></ul>
+      </div>
       <div class="actions">
         <button id="analyze" type="button" disabled>Analyze image</button>
         <span id="status" role="status" aria-live="polite"></span>
@@ -662,6 +678,10 @@ PAGE_HTML = """<!doctype html>
 
     <section id="batch-results" hidden>
       <h2>Batch composition</h2>
+      <div class="progress">
+        <div id="batch-progress-track" class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="batch-progress-bar" class="progress-bar"></div></div>
+        <p id="batch-progress-label" class="progress-label">Waiting to start.</p>
+      </div>
       <div class="stats">
         <div class="stat" style="--class-color:#ff5d5d"><span>Fiber</span><strong id="batch-fiber">—</strong></div>
         <div class="stat" style="--class-color:#55d889"><span>Resin</span><strong id="batch-resin">—</strong></div>
@@ -691,6 +711,9 @@ PAGE_HTML = """<!doctype html>
     const dropzone = document.querySelector("#dropzone");
     const preview = document.querySelector("#preview");
     const fileName = document.querySelector("#file-name");
+    const selection = document.querySelector("#selection");
+    const selectionTotal = document.querySelector("#selection-total");
+    const selectionList = document.querySelector("#selection-list");
     const analyze = document.querySelector("#analyze");
     const status = document.querySelector("#status");
     const results = document.querySelector("#results");
@@ -702,6 +725,9 @@ PAGE_HTML = """<!doctype html>
     const batchCancel = document.querySelector("#batch-cancel");
     const batchDownload = document.querySelector("#batch-download");
     const batchDiscard = document.querySelector("#batch-discard");
+    const batchProgressTrack = document.querySelector("#batch-progress-track");
+    const batchProgressBar = document.querySelector("#batch-progress-bar");
+    const batchProgressLabel = document.querySelector("#batch-progress-label");
     let selectedFiles = [];
     let previewUrl = null;
     let batchId = null;
@@ -711,6 +737,45 @@ PAGE_HTML = """<!doctype html>
     function sessionHeaders(headers = {}) {
       const token = new URLSearchParams(window.location.search).get("token");
       return token ? { ...headers, "X-Clotho-Session": token } : headers;
+    }
+
+    function formatSize(bytes) {
+      return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+    }
+
+    function renderSelection(files) {
+      selectionList.replaceChildren();
+      selection.hidden = false;
+      selectionTotal.textContent = `${files.length} image${files.length === 1 ? "" : "s"}`;
+      files.forEach((file, index) => {
+        const item = document.createElement("li");
+        item.dataset.index = index;
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = file.name;
+        const size = document.createElement("span");
+        size.className = "size";
+        size.textContent = formatSize(file.size);
+        const state = document.createElement("span");
+        state.className = "state";
+        state.textContent = "Selected";
+        item.append(name, size, state);
+        selectionList.append(item);
+      });
+    }
+
+    function setFileState(index, text, state = "") {
+      const item = selectionList.querySelector(`[data-index="${index}"] .state`);
+      if (!item) return;
+      item.textContent = text;
+      item.className = `state ${state}`;
+    }
+
+    function updateBatchProgress(completed, total, label) {
+      const percent = total ? Math.round(completed / total * 100) : 0;
+      batchProgressBar.style.width = `${percent}%`;
+      batchProgressTrack.setAttribute("aria-valuenow", String(percent));
+      batchProgressLabel.textContent = label;
     }
 
     function chooseFiles(files) {
@@ -727,6 +792,7 @@ PAGE_HTML = """<!doctype html>
         return;
       }
       selectedFiles = chosen;
+      renderSelection(chosen);
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       if (chosen.length === 1) {
         previewUrl = URL.createObjectURL(chosen[0]);
@@ -841,6 +907,7 @@ PAGE_HTML = """<!doctype html>
       batchDiscard.hidden = true;
       cancelRequested = false;
       batchSuccessfulCount = 0;
+      updateBatchProgress(0, selectedFiles.length, `0 of ${selectedFiles.length} complete`);
 
       try {
         const created = await fetch("/batches", { method: "POST", headers: sessionHeaders() });
@@ -852,6 +919,8 @@ PAGE_HTML = """<!doctype html>
           if (cancelRequested) break;
           const file = selectedFiles[index];
           status.textContent = `Analyzing ${index + 1} of ${selectedFiles.length}: ${file.name}`;
+          setFileState(index, "Processing");
+          updateBatchProgress(index, selectedFiles.length, `Processing ${index + 1} of ${selectedFiles.length}: ${file.name}`);
           const response = await fetch(`/batches/${batchId}/images`, {
             method: "POST",
             headers: sessionHeaders({ "Content-Type": "application/octet-stream", "X-Clotho-Filename": encodeURIComponent(file.name) }),
@@ -860,18 +929,23 @@ PAGE_HTML = """<!doctype html>
           const payload = await response.json();
           if (!response.ok) {
             addBatchRow(file.name, null, "Failed");
+            setFileState(index, "Failed", "failed");
             batchErrors.hidden = false;
             batchErrors.textContent += `${file.name}: ${payload.detail || "Processing failed."} `;
+            updateBatchProgress(index + 1, selectedFiles.length, `${index + 1} of ${selectedFiles.length} complete`);
             continue;
           }
           addBatchRow(payload.filename, payload.statistics.statistics, "Complete");
+          setFileState(index, "Complete", "complete");
           addThumbnail(payload.filename, payload.thumbnail_data_url);
           showBatchSummary(payload.summary);
           batchSuccessfulCount += 1;
+          updateBatchProgress(index + 1, selectedFiles.length, `${index + 1} of ${selectedFiles.length} complete`);
         }
 
         const completed = batchRows.querySelectorAll("tr").length;
         status.textContent = cancelRequested ? `Batch cancelled after ${completed} image${completed === 1 ? "" : "s"}.` : `Batch complete: ${completed} image${completed === 1 ? "" : "s"} processed.`;
+        if (cancelRequested) updateBatchProgress(completed, selectedFiles.length, `Cancelled after ${completed} of ${selectedFiles.length} images`);
         batchDownload.hidden = batchSuccessfulCount === 0;
         batchDiscard.hidden = false;
       } catch (error) {
@@ -880,7 +954,7 @@ PAGE_HTML = """<!doctype html>
         if (batchId) batchDiscard.hidden = false;
       } finally {
         batchCancel.hidden = true;
-        analyze.disabled = false;
+        analyze.disabled = Boolean(batchId) || selectedFiles.length === 0;
         analyze.textContent = "Analyze image";
       }
     }
@@ -889,6 +963,7 @@ PAGE_HTML = """<!doctype html>
       cancelRequested = true;
       batchCancel.disabled = true;
       batchCancel.textContent = "Cancelling…";
+      batchProgressLabel.textContent = "Cancelling after the current image finishes…";
       if (batchId) await fetch(`/batches/${batchId}/cancel`, { method: "POST", headers: sessionHeaders() });
     });
 
@@ -917,13 +992,21 @@ PAGE_HTML = """<!doctype html>
       batchId = null;
       selectedFiles = [];
       input.value = "";
+      selection.hidden = true;
+      selectionList.replaceChildren();
       batchResults.hidden = true;
       fileName.textContent = "No image selected";
       status.textContent = "Batch discarded.";
       status.className = "";
+      analyze.disabled = true;
     });
 
     analyze.addEventListener("click", () => {
+      if (batchId) {
+        status.textContent = "Download or discard the current batch before starting another one.";
+        status.className = "error";
+        return;
+      }
       if (selectedFiles.length === 1) analyzeSingle(selectedFiles[0]);
       if (selectedFiles.length > 1) analyzeBatch();
     });

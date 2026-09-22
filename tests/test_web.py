@@ -77,6 +77,8 @@ class WebTests(unittest.TestCase):
         self.assertIn('id="analyze"', html)
         self.assertIn('id="result-mask"', html)
         self.assertIn('id="csv-download"', html)
+        self.assertIn('id="selection-list"', html)
+        self.assertIn('id="batch-progress-bar"', html)
 
     def test_prediction_returns_pngs_and_pore_statistics(self):
         upload = UploadFile(file=io.BytesIO(encode_test_image()), filename="sample.png")
