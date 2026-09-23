@@ -604,7 +604,8 @@ PAGE_HTML = """<!doctype html>
     .download { padding: 8px 13px; font-size: .8rem; }
     .result-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
     .selection { margin-top: 18px; }
-    .selection-header { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: .9rem; }
+    .selection-header { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: .9rem; cursor: pointer; }
+    .selection-header::-webkit-details-marker { display: none; }
     .selection-list { max-height: 210px; margin: 10px 0 0; padding: 0; overflow-y: auto; border-top: 1px solid var(--border); list-style: none; }
     .selection-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--border); font-size: .9rem; }
     .selection-list .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -631,6 +632,14 @@ PAGE_HTML = """<!doctype html>
     .progress-track { height: 10px; overflow: hidden; border-radius: 99px; background: var(--panel-light); }
     .progress-bar { width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .2s ease; }
     .progress-label { margin: 9px 0 0; color: var(--muted); font-size: .9rem; }
+    .chart-section { margin-top: 22px; }
+    .chart-section summary { padding: 16px 18px; cursor: pointer; color: var(--text); font-weight: 800; }
+    .chart-section[open] summary { border-bottom: 1px solid var(--border); }
+    .chart-controls { display: flex; align-items: center; gap: 10px; margin: 18px 18px 14px; color: var(--muted); font-size: .9rem; }
+    .chart-controls select { border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--panel-light); color: var(--text); font: inherit; }
+    .chart { width: 100%; min-height: 330px; padding: 12px; overflow-x: auto; }
+    .chart svg { display: block; width: 100%; min-width: 620px; height: auto; }
+    .chart-empty { display: grid; min-height: 300px; place-items: center; color: var(--muted); }
     dialog { width: min(1180px, calc(100% - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 22px; background: var(--panel); color: var(--text); box-shadow: 0 30px 100px #000a; }
     dialog::backdrop { background: #000b; }
     .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--border); }
@@ -674,10 +683,10 @@ PAGE_HTML = """<!doctype html>
         </span>
       </label>
       <img class="preview" id="preview" alt="Selected micrograph preview">
-      <div id="selection" class="selection" hidden>
-        <div class="selection-header"><strong>Selected images</strong><span id="selection-total"></span></div>
+      <details id="selection" class="selection" hidden open>
+        <summary class="selection-header"><strong>Selected images</strong><span id="selection-total"></span></summary>
         <ul id="selection-list" class="selection-list"></ul>
-      </div>
+      </details>
       <div class="actions">
         <button id="analyze" type="button" disabled>Analyze image</button>
         <span id="status" role="status" aria-live="polite"></span>
@@ -726,6 +735,17 @@ PAGE_HTML = """<!doctype html>
         <div class="stat" style="--class-color:#69736f"><span>Unidentified</span><strong id="batch-unidentified">—</strong></div>
       </div>
       <p id="batch-summary" style="color:var(--muted)"></p>
+      <details id="batch-chart-panel" class="panel chart-section" hidden>
+        <summary>Image-to-image variation</summary>
+        <div class="chart-controls">
+          <label for="batch-chart-select">Graph type</label>
+          <select id="batch-chart-select">
+            <option value="box">Box and individual images</option>
+            <option value="density">Overlaid distributions</option>
+          </select>
+        </div>
+        <div id="batch-chart" class="chart"></div>
+      </details>
       <h2>Images</h2>
       <div class="panel" style="overflow-x:auto">
         <table class="batch-table">
@@ -784,6 +804,9 @@ PAGE_HTML = """<!doctype html>
     const batchProgressTrack = document.querySelector("#batch-progress-track");
     const batchProgressBar = document.querySelector("#batch-progress-bar");
     const batchProgressLabel = document.querySelector("#batch-progress-label");
+    const batchChartPanel = document.querySelector("#batch-chart-panel");
+    const batchChartSelect = document.querySelector("#batch-chart-select");
+    const batchChart = document.querySelector("#batch-chart");
     const batchDetail = document.querySelector("#batch-detail");
     const detailTitle = document.querySelector("#detail-title");
     const detailOriginal = document.querySelector("#detail-original");
@@ -794,6 +817,7 @@ PAGE_HTML = """<!doctype html>
     let batchId = null;
     let cancelRequested = false;
     let batchSuccessfulCount = 0;
+    let batchData = [];
     let detailUrls = [];
     let detailRequestId = 0;
 
@@ -809,6 +833,7 @@ PAGE_HTML = """<!doctype html>
     function renderSelection(files) {
       selectionList.replaceChildren();
       selection.hidden = false;
+      selection.open = true;
       selectionTotal.textContent = `${files.length} image${files.length === 1 ? "" : "s"}`;
       files.forEach((file, index) => {
         const item = document.createElement("li");
@@ -890,6 +915,7 @@ PAGE_HTML = """<!doctype html>
     dropzone.addEventListener("drop", event => chooseFiles(event.dataTransfer.files));
 
     async function analyzeSingle(file) {
+      selection.open = false;
       analyze.disabled = true;
       analyze.textContent = "Analyzing…";
       status.textContent = "Running the segmentation model. This can take a few seconds.";
@@ -941,6 +967,111 @@ PAGE_HTML = """<!doctype html>
         document.querySelector(`#batch-${name}`).textContent = `${summary.statistics[name].percent.toFixed(2)}%`;
       }
       batchSummary.textContent = `${summary.successful_images} successful image${summary.successful_images === 1 ? "" : "s"} · ${summary.total_pixels.toLocaleString()} analyzed pixels · pixel-weighted composition`;
+    }
+
+    const chartColors = { fiber: "#ff5d5d", resin: "#55d889", pore: "#668cff", unidentified: "#69736f" };
+    const svgNamespace = "http://www.w3.org/2000/svg";
+
+    function svgElement(name, attributes = {}) {
+      const element = document.createElementNS(svgNamespace, name);
+      for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+      return element;
+    }
+
+    function svgText(svg, text, x, y, attributes = {}) {
+      const label = svgElement("text", { x, y, fill: "#9fb0a8", "font-size": 12, ...attributes });
+      label.textContent = text;
+      svg.append(label);
+    }
+
+    function chartCanvas(title, yLabel) {
+      batchChart.replaceChildren();
+      const svg = svgElement("svg", { viewBox: "0 0 780 370", role: "img", "aria-label": title });
+      batchChart.append(svg);
+      svgText(svg, title, 58, 25, { fill: "#ecf4f0", "font-size": 16, "font-weight": 700 });
+      svgText(svg, yLabel, 16, 205, { transform: "rotate(-90 16 205)", "text-anchor": "middle" });
+      return { svg, left: 58, top: 46, right: 752, bottom: 314 };
+    }
+
+    function drawPercentageGrid(svg, left, top, right, bottom) {
+      for (let value = 0; value <= 100; value += 20) {
+        const y = bottom - (bottom - top) * value / 100;
+        svg.append(svgElement("line", { x1: left, y1: y, x2: right, y2: y, stroke: "#2b3833" }));
+        svgText(svg, `${value}%`, left - 9, y + 4, { "text-anchor": "end" });
+      }
+    }
+
+    function percentile(values, fraction) {
+      const position = (values.length - 1) * fraction;
+      const lower = Math.floor(position);
+      const upper = Math.ceil(position);
+      return values[lower] + (values[upper] - values[lower]) * (position - lower);
+    }
+
+    function renderBoxChart() {
+      const { svg, left, top, right, bottom } = chartCanvas("Distribution of image percentages", "Image percentage");
+      drawPercentageGrid(svg, left, top, right, bottom);
+      const names = ["fiber", "resin", "pore", "unidentified"];
+      const y = value => bottom - (bottom - top) * value / 100;
+      names.forEach((name, groupIndex) => {
+        const values = batchData.map(item => item.statistics[name].percent).sort((a, b) => a - b);
+        const center = left + (right - left) * (groupIndex + .5) / names.length;
+        const color = chartColors[name];
+        const minimum = values[0];
+        const q1 = percentile(values, .25);
+        const median = percentile(values, .5);
+        const q3 = percentile(values, .75);
+        const maximum = values.at(-1);
+        svg.append(svgElement("line", { x1: center, y1: y(minimum), x2: center, y2: y(maximum), stroke: color, "stroke-width": 2 }));
+        svg.append(svgElement("rect", { x: center - 18, y: y(q3), width: 36, height: Math.max(2, y(q1) - y(q3)), fill: color, opacity: .8 }));
+        svg.append(svgElement("line", { x1: center - 18, y1: y(median), x2: center + 18, y2: y(median), stroke: "#ecf4f0", "stroke-width": 2 }));
+        values.forEach((value, index) => svg.append(svgElement("circle", { cx: center + ((index * 13) % 17 - 8), cy: y(value), r: 3.5, fill: color, stroke: "#0c1110", "stroke-width": 1 })));
+        svgText(svg, name[0].toUpperCase() + name.slice(1), center, bottom + 28, { "text-anchor": "middle", fill: "#ecf4f0" });
+      });
+    }
+
+    function renderDensityChart() {
+      const { svg, left, top, right, bottom } = chartCanvas("Overlaid distributions of image percentages", "Relative frequency");
+      const names = ["fiber", "resin", "pore"];
+      const bandwidth = 7;
+      const points = names.map(name => ({
+        name,
+        values: batchData.map(item => item.statistics[name].percent),
+        density: Array.from({ length: 101 }, (_, percentage) => batchData.reduce((total, item) => {
+          const distance = (percentage - item.statistics[name].percent) / bandwidth;
+          return total + Math.exp(-distance * distance / 2);
+        }, 0) / batchData.length),
+      }));
+      const maximum = Math.max(...points.flatMap(point => point.density));
+      const x = value => left + (right - left) * value / 100;
+      const y = value => bottom - (bottom - top) * value / maximum;
+      for (let percentage = 0; percentage <= 100; percentage += 20) {
+        const position = x(percentage);
+        svg.append(svgElement("line", { x1: position, y1: top, x2: position, y2: bottom, stroke: "#2b3833" }));
+        svgText(svg, `${percentage}%`, position, bottom + 24, { "text-anchor": "middle" });
+      }
+      for (let fraction = 0; fraction <= 1; fraction += .25) {
+        const position = y(maximum * fraction);
+        svg.append(svgElement("line", { x1: left, y1: position, x2: right, y2: position, stroke: "#2b3833" }));
+        svgText(svg, (maximum * fraction).toFixed(2), left - 9, position + 4, { "text-anchor": "end" });
+      }
+      points.forEach((point, index) => {
+        const path = point.density.map((value, percentage) => `${percentage ? "L" : "M"}${x(percentage).toFixed(1)},${y(value).toFixed(1)}`).join(" ");
+        svg.append(svgElement("path", { d: path, fill: "none", stroke: chartColors[point.name], "stroke-width": 3 }));
+        const legendX = left + index * 150;
+        svg.append(svgElement("line", { x1: legendX, y1: 37, x2: legendX + 22, y2: 37, stroke: chartColors[point.name], "stroke-width": 3 }));
+        svgText(svg, point.name[0].toUpperCase() + point.name.slice(1), legendX + 29, 41, { fill: "#ecf4f0" });
+      });
+    }
+
+    function renderBatchChart() {
+      if (!batchData.length) {
+        batchChartPanel.hidden = true;
+        return;
+      }
+      batchChartPanel.hidden = false;
+      if (batchChartSelect.value === "density") renderDensityChart();
+      else renderBoxChart();
     }
 
     function closeBatchDetail() {
@@ -1007,6 +1138,7 @@ PAGE_HTML = """<!doctype html>
     }
 
     async function analyzeBatch() {
+      selection.open = false;
       analyze.disabled = true;
       analyze.textContent = "Analyzing batch…";
       results.hidden = true;
@@ -1022,6 +1154,7 @@ PAGE_HTML = """<!doctype html>
       batchDiscard.hidden = true;
       cancelRequested = false;
       batchSuccessfulCount = 0;
+      batchData = [];
       updateBatchProgress(0, selectedFiles.length, `0 of ${selectedFiles.length} complete`);
 
       try {
@@ -1055,6 +1188,8 @@ PAGE_HTML = """<!doctype html>
           addThumbnail(index, payload.result_index, payload.filename, payload.thumbnail_data_url, payload.statistics.statistics);
           showBatchSummary(payload.summary);
           batchSuccessfulCount += 1;
+          batchData.push({ filename: payload.filename, statistics: payload.statistics.statistics });
+          renderBatchChart();
           updateBatchProgress(index + 1, selectedFiles.length, `${index + 1} of ${selectedFiles.length} complete`);
         }
 
@@ -1111,6 +1246,7 @@ PAGE_HTML = """<!doctype html>
       selection.hidden = true;
       selectionList.replaceChildren();
       batchResults.hidden = true;
+      batchChartPanel.hidden = true;
       fileName.textContent = "No image selected";
       status.textContent = "Batch discarded.";
       status.className = "";
@@ -1135,6 +1271,7 @@ PAGE_HTML = """<!doctype html>
       for (const url of detailUrls) URL.revokeObjectURL(url);
       detailUrls = [];
     });
+    batchChartSelect.addEventListener("change", renderBatchChart);
   </script>
 </body>
 </html>
