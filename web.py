@@ -34,6 +34,7 @@ import torch
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from common.labels import CLASS_NAMES, decode_mask
 from common.model import FiberglassUNet
@@ -101,6 +102,7 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+app.mount("/static", StaticFiles(directory=RESOURCE_ROOT / "static"), name="static")
 
 
 def require_session(request: Request) -> None:
@@ -637,9 +639,8 @@ PAGE_HTML = """<!doctype html>
     .chart-section[open] summary { border-bottom: 1px solid var(--border); }
     .chart-controls { display: flex; align-items: center; gap: 10px; margin: 18px 18px 14px; color: var(--muted); font-size: .9rem; }
     .chart-controls select { border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--panel-light); color: var(--text); font: inherit; }
-    .chart { width: 100%; min-height: 330px; padding: 12px; overflow-x: auto; }
-    .chart svg { display: block; width: 100%; min-width: 620px; height: auto; }
-    .chart-empty { display: grid; min-height: 300px; place-items: center; color: var(--muted); }
+    .chart { width: calc(100% - 24px); height: 320px; margin: 0 12px 12px; overflow: hidden; }
+    .chart-empty { display: grid; place-items: center; color: var(--muted); }
     dialog { width: min(1180px, calc(100% - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 22px; background: var(--panel); color: var(--text); box-shadow: 0 30px 100px #000a; }
     dialog::backdrop { background: #000b; }
     .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--border); }
@@ -782,6 +783,7 @@ PAGE_HTML = """<!doctype html>
     </div>
   </dialog>
 
+  <script src="/static/plotly.min.js"></script>
   <script>
     const input = document.querySelector("#file-input");
     const dropzone = document.querySelector("#dropzone");
@@ -970,98 +972,65 @@ PAGE_HTML = """<!doctype html>
     }
 
     const chartColors = { fiber: "#ff5d5d", resin: "#55d889", pore: "#668cff", unidentified: "#69736f" };
-    const svgNamespace = "http://www.w3.org/2000/svg";
-
-    function svgElement(name, attributes = {}) {
-      const element = document.createElementNS(svgNamespace, name);
-      for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
-      return element;
+    function plotLayout(title, yTitle) {
+      return {
+        title: { text: title, font: { color: "#ecf4f0", size: 17 } },
+        paper_bgcolor: "#151c1a",
+        plot_bgcolor: "#151c1a",
+        font: { color: "#9fb0a8" },
+        height: 320,
+        margin: { l: 58, r: 20, t: 48, b: 48 },
+        hovermode: "closest",
+        hoverlabel: { bgcolor: "#092016", font: { color: "#ecf4f0" } },
+        yaxis: { title: yTitle, gridcolor: "#2b3833", zerolinecolor: "#2b3833" },
+        xaxis: { gridcolor: "#2b3833", zerolinecolor: "#2b3833" },
+        legend: { orientation: "h", y: 1.13 },
+      };
     }
 
-    function svgText(svg, text, x, y, attributes = {}) {
-      const label = svgElement("text", { x, y, fill: "#9fb0a8", "font-size": 12, ...attributes });
-      label.textContent = text;
-      svg.append(label);
-    }
-
-    function chartCanvas(title, yLabel) {
-      batchChart.replaceChildren();
-      const svg = svgElement("svg", { viewBox: "0 0 780 370", role: "img", "aria-label": title });
-      batchChart.append(svg);
-      svgText(svg, title, 58, 25, { fill: "#ecf4f0", "font-size": 16, "font-weight": 700 });
-      svgText(svg, yLabel, 16, 205, { transform: "rotate(-90 16 205)", "text-anchor": "middle" });
-      return { svg, left: 58, top: 46, right: 752, bottom: 314 };
-    }
-
-    function drawPercentageGrid(svg, left, top, right, bottom) {
-      for (let value = 0; value <= 100; value += 20) {
-        const y = bottom - (bottom - top) * value / 100;
-        svg.append(svgElement("line", { x1: left, y1: y, x2: right, y2: y, stroke: "#2b3833" }));
-        svgText(svg, `${value}%`, left - 9, y + 4, { "text-anchor": "end" });
-      }
-    }
-
-    function percentile(values, fraction) {
-      const position = (values.length - 1) * fraction;
-      const lower = Math.floor(position);
-      const upper = Math.ceil(position);
-      return values[lower] + (values[upper] - values[lower]) * (position - lower);
+    function plotBatchPoint(event) {
+      const point = event.points[0];
+      const row = batchData[point.customdata[1]];
+      if (row) openBatchDetail(row.selectedIndex, row.resultIndex, row.filename, row.statistics);
     }
 
     function renderBoxChart() {
-      const { svg, left, top, right, bottom } = chartCanvas("Distribution of image percentages", "Image percentage");
-      drawPercentageGrid(svg, left, top, right, bottom);
-      const names = ["fiber", "resin", "pore", "unidentified"];
-      const y = value => bottom - (bottom - top) * value / 100;
-      names.forEach((name, groupIndex) => {
-        const values = batchData.map(item => item.statistics[name].percent).sort((a, b) => a - b);
-        const center = left + (right - left) * (groupIndex + .5) / names.length;
-        const color = chartColors[name];
-        const minimum = values[0];
-        const q1 = percentile(values, .25);
-        const median = percentile(values, .5);
-        const q3 = percentile(values, .75);
-        const maximum = values.at(-1);
-        svg.append(svgElement("line", { x1: center, y1: y(minimum), x2: center, y2: y(maximum), stroke: color, "stroke-width": 2 }));
-        svg.append(svgElement("rect", { x: center - 18, y: y(q3), width: 36, height: Math.max(2, y(q1) - y(q3)), fill: color, opacity: .8 }));
-        svg.append(svgElement("line", { x1: center - 18, y1: y(median), x2: center + 18, y2: y(median), stroke: "#ecf4f0", "stroke-width": 2 }));
-        values.forEach((value, index) => svg.append(svgElement("circle", { cx: center + ((index * 13) % 17 - 8), cy: y(value), r: 3.5, fill: color, stroke: "#0c1110", "stroke-width": 1 })));
-        svgText(svg, name[0].toUpperCase() + name.slice(1), center, bottom + 28, { "text-anchor": "middle", fill: "#ecf4f0" });
-      });
+      const traces = ["fiber", "resin", "pore", "unidentified"].map(name => ({
+        type: "box",
+        name: name[0].toUpperCase() + name.slice(1),
+        y: batchData.map(item => item.statistics[name].percent),
+        customdata: batchData.map((item, index) => [item.filename, index]),
+        boxpoints: "all",
+        jitter: .35,
+        pointpos: 0,
+        marker: { color: chartColors[name], size: 8 },
+        line: { color: chartColors[name] },
+        hovertemplate: "%{customdata[0]}<br>%{fullData.name}: %{y:.2f}%<extra></extra>",
+      }));
+      const layout = plotLayout("Distribution of image percentages", "Image percentage");
+      layout.yaxis.range = [0, 100];
+      layout.xaxis.showgrid = false;
+      window.Plotly.newPlot(batchChart, traces, layout, { displayModeBar: false, responsive: true });
+      batchChart.on("plotly_click", plotBatchPoint);
     }
 
     function renderDensityChart() {
-      const { svg, left, top, right, bottom } = chartCanvas("Overlaid distributions of image percentages", "Relative frequency");
-      const names = ["fiber", "resin", "pore"];
       const bandwidth = 7;
-      const points = names.map(name => ({
-        name,
-        values: batchData.map(item => item.statistics[name].percent),
-        density: Array.from({ length: 101 }, (_, percentage) => batchData.reduce((total, item) => {
+      const traces = ["fiber", "resin", "pore"].map(name => ({
+        type: "scatter",
+        mode: "lines",
+        name: name[0].toUpperCase() + name.slice(1),
+        x: Array.from({ length: 101 }, (_, percentage) => percentage),
+        y: Array.from({ length: 101 }, (_, percentage) => batchData.reduce((total, item) => {
           const distance = (percentage - item.statistics[name].percent) / bandwidth;
           return total + Math.exp(-distance * distance / 2);
         }, 0) / batchData.length),
+        line: { color: chartColors[name], width: 3 },
+        hovertemplate: "%{fullData.name}<br>%{x:.1f}%<br>Relative frequency: %{y:.3f}<extra></extra>",
       }));
-      const maximum = Math.max(...points.flatMap(point => point.density));
-      const x = value => left + (right - left) * value / 100;
-      const y = value => bottom - (bottom - top) * value / maximum;
-      for (let percentage = 0; percentage <= 100; percentage += 20) {
-        const position = x(percentage);
-        svg.append(svgElement("line", { x1: position, y1: top, x2: position, y2: bottom, stroke: "#2b3833" }));
-        svgText(svg, `${percentage}%`, position, bottom + 24, { "text-anchor": "middle" });
-      }
-      for (let fraction = 0; fraction <= 1; fraction += .25) {
-        const position = y(maximum * fraction);
-        svg.append(svgElement("line", { x1: left, y1: position, x2: right, y2: position, stroke: "#2b3833" }));
-        svgText(svg, (maximum * fraction).toFixed(2), left - 9, position + 4, { "text-anchor": "end" });
-      }
-      points.forEach((point, index) => {
-        const path = point.density.map((value, percentage) => `${percentage ? "L" : "M"}${x(percentage).toFixed(1)},${y(value).toFixed(1)}`).join(" ");
-        svg.append(svgElement("path", { d: path, fill: "none", stroke: chartColors[point.name], "stroke-width": 3 }));
-        const legendX = left + index * 150;
-        svg.append(svgElement("line", { x1: legendX, y1: 37, x2: legendX + 22, y2: 37, stroke: chartColors[point.name], "stroke-width": 3 }));
-        svgText(svg, point.name[0].toUpperCase() + point.name.slice(1), legendX + 29, 41, { fill: "#ecf4f0" });
-      });
+      const layout = plotLayout("Overlaid distributions of image percentages", "Relative frequency");
+      layout.xaxis = { ...layout.xaxis, title: "Image percentage", range: [0, 100] };
+      window.Plotly.newPlot(batchChart, traces, layout, { displayModeBar: false, responsive: true });
     }
 
     function renderBatchChart() {
@@ -1070,6 +1039,13 @@ PAGE_HTML = """<!doctype html>
         return;
       }
       batchChartPanel.hidden = false;
+      if (!window.Plotly) {
+        batchChart.className = "chart chart-empty";
+        batchChart.textContent = "Interactive chart assets are not available.";
+        return;
+      }
+      batchChart.className = "chart";
+      window.Plotly.purge(batchChart);
       if (batchChartSelect.value === "density") renderDensityChart();
       else renderBoxChart();
     }
@@ -1188,7 +1164,12 @@ PAGE_HTML = """<!doctype html>
           addThumbnail(index, payload.result_index, payload.filename, payload.thumbnail_data_url, payload.statistics.statistics);
           showBatchSummary(payload.summary);
           batchSuccessfulCount += 1;
-          batchData.push({ filename: payload.filename, statistics: payload.statistics.statistics });
+          batchData.push({
+            filename: payload.filename,
+            selectedIndex: index,
+            resultIndex: payload.result_index,
+            statistics: payload.statistics.statistics,
+          });
           renderBatchChart();
           updateBatchProgress(index + 1, selectedFiles.length, `${index + 1} of ${selectedFiles.length} complete`);
         }
