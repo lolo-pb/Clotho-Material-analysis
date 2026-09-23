@@ -1001,33 +1001,43 @@ PAGE_HTML = """<!doctype html>
 
     function renderBoxChart() {
       const names = ["fiber", "resin", "pore", "unidentified"];
-      const traces = names.map(name => ({
-        type: "box",
-        name: name[0].toUpperCase() + name.slice(1),
-        y: batchData.map(item => item.statistics[name].percent),
-        customdata: batchData.map((item, index) => [item.filename, index]),
-        boxpoints: "all",
-        jitter: .35,
-        pointpos: 0,
-        marker: { color: chartColors[name], size: 8 },
-        line: { color: chartColors[name] },
-        hovertemplate: "%{customdata[0]}<br>%{fullData.name}: %{y:.2f}%<extra></extra>",
-      }));
+      const traces = names.map(name => {
+        const values = batchData.map(item => item.statistics[name].percent);
+        const minimum = Math.min(...values);
+        const maximum = Math.max(...values);
+        return {
+          type: "box",
+          name: name[0].toUpperCase() + name.slice(1),
+          x: values,
+          orientation: "h",
+          customdata: batchData.map((item, index) => {
+            const label = values[index] === minimum && values[index] === maximum ? "Minimum and maximum" : values[index] === minimum ? "Minimum" : values[index] === maximum ? "Maximum" : "Image result";
+            return [item.filename, index, label];
+          }),
+          boxpoints: "all",
+          jitter: .35,
+          pointpos: 0,
+          hoveron: "points",
+          marker: { color: chartColors[name], size: 8 },
+          line: { color: chartColors[name] },
+          hovertemplate: "%{customdata[2]}<br>%{customdata[0]}<br>%{fullData.name}: %{x:.2f}%<extra></extra>",
+        };
+      });
       if (batchSummaryStatistics) {
         traces.push({
           type: "scatter",
           mode: "markers",
-          x: names.map(name => name[0].toUpperCase() + name.slice(1)),
-          y: names.map(name => batchSummaryStatistics[name].percent),
+          x: names.map(name => batchSummaryStatistics[name].percent),
+          y: names.map(name => name[0].toUpperCase() + name.slice(1)),
           customdata: names.map(name => name[0].toUpperCase() + name.slice(1)),
           marker: { color: names.map(name => chartColors[name]), size: 12, symbol: "diamond", line: { color: "#ecf4f0", width: 1 } },
-          hovertemplate: "Pixel-weighted batch composition<br>%{customdata}: %{y:.2f}%<extra></extra>",
+          hovertemplate: "Pixel-weighted batch composition<br>%{customdata}: %{x:.2f}%<extra></extra>",
           showlegend: false,
         });
       }
-      const layout = plotLayout("Distribution of image percentages", "Image percentage");
-      layout.yaxis.range = [0, 100];
-      layout.xaxis.showgrid = false;
+      const layout = plotLayout("Distribution of image percentages", "Class");
+      layout.xaxis = { ...layout.xaxis, title: "Image percentage", range: [0, 100] };
+      layout.yaxis.showgrid = false;
       window.Plotly.newPlot(batchChart, traces, layout, { displayModeBar: false, responsive: true });
       batchChart.on("plotly_click", plotBatchPoint);
     }
