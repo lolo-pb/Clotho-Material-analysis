@@ -641,6 +641,7 @@ PAGE_HTML = """<!doctype html>
     .chart-controls select { border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--panel-light); color: var(--text); font: inherit; }
     .chart { width: calc(100% - 24px); height: 320px; margin: 0 12px 12px; overflow: hidden; }
     .chart-empty { display: grid; place-items: center; color: var(--muted); }
+    .chart-note { margin: 0 18px 18px; color: var(--muted); font-size: .82rem; line-height: 1.45; }
     dialog { width: min(1180px, calc(100% - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 22px; background: var(--panel); color: var(--text); box-shadow: 0 30px 100px #000a; }
     dialog::backdrop { background: #000b; }
     .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--border); }
@@ -746,6 +747,7 @@ PAGE_HTML = """<!doctype html>
           </select>
         </div>
         <div id="batch-chart" class="chart"></div>
+        <p class="chart-note">Each dot represents one successful image. Diamonds show the pixel-weighted batch composition from the statistic cards; the distribution curves smooth the same image values.</p>
       </details>
       <h2>Images</h2>
       <div class="panel" style="overflow-x:auto">
@@ -820,6 +822,7 @@ PAGE_HTML = """<!doctype html>
     let cancelRequested = false;
     let batchSuccessfulCount = 0;
     let batchData = [];
+    let batchSummaryStatistics = null;
     let detailUrls = [];
     let detailRequestId = 0;
 
@@ -965,6 +968,7 @@ PAGE_HTML = """<!doctype html>
 
     function showBatchSummary(summary) {
       if (!summary.statistics || !summary.successful_images) return;
+      batchSummaryStatistics = summary.statistics;
       for (const name of ["fiber", "resin", "pore", "unidentified"]) {
         document.querySelector(`#batch-${name}`).textContent = `${summary.statistics[name].percent.toFixed(2)}%`;
       }
@@ -990,12 +994,14 @@ PAGE_HTML = """<!doctype html>
 
     function plotBatchPoint(event) {
       const point = event.points[0];
+      if (!point.customdata) return;
       const row = batchData[point.customdata[1]];
       if (row) openBatchDetail(row.selectedIndex, row.resultIndex, row.filename, row.statistics);
     }
 
     function renderBoxChart() {
-      const traces = ["fiber", "resin", "pore", "unidentified"].map(name => ({
+      const names = ["fiber", "resin", "pore", "unidentified"];
+      const traces = names.map(name => ({
         type: "box",
         name: name[0].toUpperCase() + name.slice(1),
         y: batchData.map(item => item.statistics[name].percent),
@@ -1007,6 +1013,18 @@ PAGE_HTML = """<!doctype html>
         line: { color: chartColors[name] },
         hovertemplate: "%{customdata[0]}<br>%{fullData.name}: %{y:.2f}%<extra></extra>",
       }));
+      if (batchSummaryStatistics) {
+        traces.push({
+          type: "scatter",
+          mode: "markers",
+          x: names.map(name => name[0].toUpperCase() + name.slice(1)),
+          y: names.map(name => batchSummaryStatistics[name].percent),
+          customdata: names.map(name => name[0].toUpperCase() + name.slice(1)),
+          marker: { color: names.map(name => chartColors[name]), size: 12, symbol: "diamond", line: { color: "#ecf4f0", width: 1 } },
+          hovertemplate: "Pixel-weighted batch composition<br>%{customdata}: %{y:.2f}%<extra></extra>",
+          showlegend: false,
+        });
+      }
       const layout = plotLayout("Distribution of image percentages", "Image percentage");
       layout.yaxis.range = [0, 100];
       layout.xaxis.showgrid = false;
@@ -1016,18 +1034,34 @@ PAGE_HTML = """<!doctype html>
 
     function renderDensityChart() {
       const bandwidth = 7;
-      const traces = ["fiber", "resin", "pore"].map(name => ({
-        type: "scatter",
-        mode: "lines",
-        name: name[0].toUpperCase() + name.slice(1),
-        x: Array.from({ length: 101 }, (_, percentage) => percentage),
-        y: Array.from({ length: 101 }, (_, percentage) => batchData.reduce((total, item) => {
-          const distance = (percentage - item.statistics[name].percent) / bandwidth;
+      const traces = ["fiber", "resin", "pore"].flatMap(name => {
+        const percentages = batchData.map(item => item.statistics[name].percent);
+        const densityAt = percentage => percentages.reduce((total, value) => {
+          const distance = (percentage - value) / bandwidth;
           return total + Math.exp(-distance * distance / 2);
-        }, 0) / batchData.length),
-        line: { color: chartColors[name], width: 3 },
-        hovertemplate: "%{fullData.name}<br>%{x:.1f}%<br>Relative frequency: %{y:.3f}<extra></extra>",
-      }));
+        }, 0) / percentages.length;
+        return [
+          {
+            type: "scatter",
+            mode: "lines",
+            name: name[0].toUpperCase() + name.slice(1),
+            x: Array.from({ length: 101 }, (_, percentage) => percentage),
+            y: Array.from({ length: 101 }, (_, percentage) => densityAt(percentage)),
+            line: { color: chartColors[name], width: 3 },
+            hovertemplate: "%{fullData.name}<br>%{x:.1f}%<br>Relative frequency: %{y:.3f}<extra></extra>",
+          },
+          {
+            type: "scatter",
+            mode: "markers",
+            x: percentages,
+            y: percentages.map(densityAt),
+            customdata: batchData.map(item => item.filename),
+            marker: { color: chartColors[name], size: 8 },
+            hovertemplate: "%{customdata}<br>" + name[0].toUpperCase() + name.slice(1) + ": %{x:.2f}%<extra></extra>",
+            showlegend: false,
+          },
+        ];
+      });
       const layout = plotLayout("Overlaid distributions of image percentages", "Relative frequency");
       layout.xaxis = { ...layout.xaxis, title: "Image percentage", range: [0, 100] };
       window.Plotly.newPlot(batchChart, traces, layout, { displayModeBar: false, responsive: true });
@@ -1131,6 +1165,7 @@ PAGE_HTML = """<!doctype html>
       cancelRequested = false;
       batchSuccessfulCount = 0;
       batchData = [];
+      batchSummaryStatistics = null;
       updateBatchProgress(0, selectedFiles.length, `0 of ${selectedFiles.length} complete`);
 
       try {
@@ -1228,6 +1263,7 @@ PAGE_HTML = """<!doctype html>
       selectionList.replaceChildren();
       batchResults.hidden = true;
       batchChartPanel.hidden = true;
+      batchSummaryStatistics = null;
       fileName.textContent = "No image selected";
       status.textContent = "Batch discarded.";
       status.className = "";
