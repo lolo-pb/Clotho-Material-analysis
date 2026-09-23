@@ -119,6 +119,10 @@ the **Build Windows installer** GitHub Action: run it manually to download the
 workflow artifact, or push a `v*` tag to attach it to a GitHub Release. The
 first release is unsigned, so Windows may show a SmartScreen warning.
 
+The Plotly browser bundle is kept with the server's static files and packaged
+with the backend. Batch graphs therefore remain interactive offline and work
+when running `web.py` directly from a development checkout.
+
 ## Folders
 
 - `training/images/`: original pictures used to train the model.
