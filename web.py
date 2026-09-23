@@ -34,6 +34,7 @@ import torch
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from common.labels import CLASS_NAMES, decode_mask
 from common.model import FiberglassUNet
@@ -101,6 +102,7 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+app.mount("/static", StaticFiles(directory=RESOURCE_ROOT / "static"), name="static")
 
 
 def require_session(request: Request) -> None:
@@ -604,7 +606,8 @@ PAGE_HTML = """<!doctype html>
     .download { padding: 8px 13px; font-size: .8rem; }
     .result-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
     .selection { margin-top: 18px; }
-    .selection-header { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: .9rem; }
+    .selection-header { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: .9rem; cursor: pointer; }
+    .selection-header::-webkit-details-marker { display: none; }
     .selection-list { max-height: 210px; margin: 10px 0 0; padding: 0; overflow-y: auto; border-top: 1px solid var(--border); list-style: none; }
     .selection-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--border); font-size: .9rem; }
     .selection-list .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -631,6 +634,14 @@ PAGE_HTML = """<!doctype html>
     .progress-track { height: 10px; overflow: hidden; border-radius: 99px; background: var(--panel-light); }
     .progress-bar { width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .2s ease; }
     .progress-label { margin: 9px 0 0; color: var(--muted); font-size: .9rem; }
+    .chart-section { margin-top: 22px; }
+    .chart-section summary { padding: 16px 18px; cursor: pointer; color: var(--text); font-weight: 800; }
+    .chart-section[open] summary { border-bottom: 1px solid var(--border); }
+    .chart-controls { display: flex; align-items: center; gap: 10px; margin: 18px 18px 14px; color: var(--muted); font-size: .9rem; }
+    .chart-controls select { border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--panel-light); color: var(--text); font: inherit; }
+    .chart { width: calc(100% - 24px); height: 320px; margin: 0 12px 12px; overflow: hidden; }
+    .chart-empty { display: grid; place-items: center; color: var(--muted); }
+    .chart-note { margin: 0 18px 18px; color: var(--muted); font-size: .82rem; line-height: 1.45; }
     dialog { width: min(1180px, calc(100% - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 22px; background: var(--panel); color: var(--text); box-shadow: 0 30px 100px #000a; }
     dialog::backdrop { background: #000b; }
     .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--border); }
@@ -674,10 +685,10 @@ PAGE_HTML = """<!doctype html>
         </span>
       </label>
       <img class="preview" id="preview" alt="Selected micrograph preview">
-      <div id="selection" class="selection" hidden>
-        <div class="selection-header"><strong>Selected images</strong><span id="selection-total"></span></div>
+      <details id="selection" class="selection" hidden open>
+        <summary class="selection-header"><strong>Selected images</strong><span id="selection-total"></span></summary>
         <ul id="selection-list" class="selection-list"></ul>
-      </div>
+      </details>
       <div class="actions">
         <button id="analyze" type="button" disabled>Analyze image</button>
         <span id="status" role="status" aria-live="polite"></span>
@@ -726,6 +737,18 @@ PAGE_HTML = """<!doctype html>
         <div class="stat" style="--class-color:#69736f"><span>Unidentified</span><strong id="batch-unidentified">—</strong></div>
       </div>
       <p id="batch-summary" style="color:var(--muted)"></p>
+      <details id="batch-chart-panel" class="panel chart-section" hidden>
+        <summary>Image-to-image variation</summary>
+        <div class="chart-controls">
+          <label for="batch-chart-select">Graph type</label>
+          <select id="batch-chart-select">
+            <option value="box">Box and individual images</option>
+            <option value="density">Overlaid distributions</option>
+          </select>
+        </div>
+        <div id="batch-chart" class="chart"></div>
+        <p class="chart-note">Each dot represents one successful image. Diamonds show the pixel-weighted batch composition from the statistic cards; the distribution curves smooth the same image values.</p>
+      </details>
       <h2>Images</h2>
       <div class="panel" style="overflow-x:auto">
         <table class="batch-table">
@@ -762,6 +785,7 @@ PAGE_HTML = """<!doctype html>
     </div>
   </dialog>
 
+  <script src="/static/plotly.min.js"></script>
   <script>
     const input = document.querySelector("#file-input");
     const dropzone = document.querySelector("#dropzone");
@@ -784,6 +808,9 @@ PAGE_HTML = """<!doctype html>
     const batchProgressTrack = document.querySelector("#batch-progress-track");
     const batchProgressBar = document.querySelector("#batch-progress-bar");
     const batchProgressLabel = document.querySelector("#batch-progress-label");
+    const batchChartPanel = document.querySelector("#batch-chart-panel");
+    const batchChartSelect = document.querySelector("#batch-chart-select");
+    const batchChart = document.querySelector("#batch-chart");
     const batchDetail = document.querySelector("#batch-detail");
     const detailTitle = document.querySelector("#detail-title");
     const detailOriginal = document.querySelector("#detail-original");
@@ -794,6 +821,8 @@ PAGE_HTML = """<!doctype html>
     let batchId = null;
     let cancelRequested = false;
     let batchSuccessfulCount = 0;
+    let batchData = [];
+    let batchSummaryStatistics = null;
     let detailUrls = [];
     let detailRequestId = 0;
 
@@ -809,6 +838,7 @@ PAGE_HTML = """<!doctype html>
     function renderSelection(files) {
       selectionList.replaceChildren();
       selection.hidden = false;
+      selection.open = true;
       selectionTotal.textContent = `${files.length} image${files.length === 1 ? "" : "s"}`;
       files.forEach((file, index) => {
         const item = document.createElement("li");
@@ -890,6 +920,7 @@ PAGE_HTML = """<!doctype html>
     dropzone.addEventListener("drop", event => chooseFiles(event.dataTransfer.files));
 
     async function analyzeSingle(file) {
+      selection.open = false;
       analyze.disabled = true;
       analyze.textContent = "Analyzing…";
       status.textContent = "Running the segmentation model. This can take a few seconds.";
@@ -937,10 +968,130 @@ PAGE_HTML = """<!doctype html>
 
     function showBatchSummary(summary) {
       if (!summary.statistics || !summary.successful_images) return;
+      batchSummaryStatistics = summary.statistics;
       for (const name of ["fiber", "resin", "pore", "unidentified"]) {
         document.querySelector(`#batch-${name}`).textContent = `${summary.statistics[name].percent.toFixed(2)}%`;
       }
       batchSummary.textContent = `${summary.successful_images} successful image${summary.successful_images === 1 ? "" : "s"} · ${summary.total_pixels.toLocaleString()} analyzed pixels · pixel-weighted composition`;
+    }
+
+    const chartColors = { fiber: "#ff5d5d", resin: "#55d889", pore: "#668cff", unidentified: "#69736f" };
+    function plotLayout(title, yTitle) {
+      return {
+        title: { text: title, font: { color: "#ecf4f0", size: 17 } },
+        paper_bgcolor: "#151c1a",
+        plot_bgcolor: "#151c1a",
+        font: { color: "#9fb0a8" },
+        height: 320,
+        margin: { l: 58, r: 20, t: 48, b: 48 },
+        hovermode: "closest",
+        hoverlabel: { bgcolor: "#092016", font: { color: "#ecf4f0" } },
+        yaxis: { title: yTitle, gridcolor: "#2b3833", zerolinecolor: "#2b3833" },
+        xaxis: { gridcolor: "#2b3833", zerolinecolor: "#2b3833" },
+        legend: { orientation: "h", y: 1.13 },
+      };
+    }
+
+    function plotBatchPoint(event) {
+      const point = event.points[0];
+      if (!point.customdata) return;
+      const row = batchData[point.customdata[1]];
+      if (row) openBatchDetail(row.selectedIndex, row.resultIndex, row.filename, row.statistics);
+    }
+
+    function renderBoxChart() {
+      const names = ["fiber", "resin", "pore", "unidentified"];
+      const traces = names.map(name => {
+        const values = batchData.map(item => item.statistics[name].percent);
+        const minimum = Math.min(...values);
+        const maximum = Math.max(...values);
+        return {
+          type: "box",
+          name: name[0].toUpperCase() + name.slice(1),
+          x: values,
+          orientation: "h",
+          customdata: batchData.map((item, index) => {
+            const label = values[index] === minimum && values[index] === maximum ? "Minimum and maximum" : values[index] === minimum ? "Minimum" : values[index] === maximum ? "Maximum" : "Image result";
+            return [item.filename, index, label];
+          }),
+          boxpoints: "all",
+          jitter: .35,
+          pointpos: 0,
+          hoveron: "points",
+          marker: { color: chartColors[name], size: 8 },
+          line: { color: chartColors[name] },
+          hovertemplate: "%{customdata[2]}<br>%{customdata[0]}<br>%{fullData.name}: %{x:.2f}%<extra></extra>",
+        };
+      });
+      if (batchSummaryStatistics) {
+        traces.push({
+          type: "scatter",
+          mode: "markers",
+          x: names.map(name => batchSummaryStatistics[name].percent),
+          y: names.map(name => name[0].toUpperCase() + name.slice(1)),
+          customdata: names.map(name => name[0].toUpperCase() + name.slice(1)),
+          marker: { color: names.map(name => chartColors[name]), size: 12, symbol: "diamond", line: { color: "#ecf4f0", width: 1 } },
+          hovertemplate: "Pixel-weighted batch composition<br>%{customdata}: %{x:.2f}%<extra></extra>",
+          showlegend: false,
+        });
+      }
+      const layout = plotLayout("Distribution of image percentages", "Class");
+      layout.xaxis = { ...layout.xaxis, title: "Image percentage", range: [0, 100] };
+      layout.yaxis.showgrid = false;
+      window.Plotly.newPlot(batchChart, traces, layout, { displayModeBar: false, responsive: true });
+      batchChart.on("plotly_click", plotBatchPoint);
+    }
+
+    function renderDensityChart() {
+      const bandwidth = 7;
+      const traces = ["fiber", "resin", "pore"].flatMap(name => {
+        const percentages = batchData.map(item => item.statistics[name].percent);
+        const densityAt = percentage => percentages.reduce((total, value) => {
+          const distance = (percentage - value) / bandwidth;
+          return total + Math.exp(-distance * distance / 2);
+        }, 0) / percentages.length;
+        return [
+          {
+            type: "scatter",
+            mode: "lines",
+            name: name[0].toUpperCase() + name.slice(1),
+            x: Array.from({ length: 101 }, (_, percentage) => percentage),
+            y: Array.from({ length: 101 }, (_, percentage) => densityAt(percentage)),
+            line: { color: chartColors[name], width: 3 },
+            hovertemplate: "%{fullData.name}<br>%{x:.1f}%<br>Relative frequency: %{y:.3f}<extra></extra>",
+          },
+          {
+            type: "scatter",
+            mode: "markers",
+            x: percentages,
+            y: percentages.map(densityAt),
+            customdata: batchData.map(item => item.filename),
+            marker: { color: chartColors[name], size: 8 },
+            hovertemplate: "%{customdata}<br>" + name[0].toUpperCase() + name.slice(1) + ": %{x:.2f}%<extra></extra>",
+            showlegend: false,
+          },
+        ];
+      });
+      const layout = plotLayout("Overlaid distributions of image percentages", "Relative frequency");
+      layout.xaxis = { ...layout.xaxis, title: "Image percentage", range: [0, 100] };
+      window.Plotly.newPlot(batchChart, traces, layout, { displayModeBar: false, responsive: true });
+    }
+
+    function renderBatchChart() {
+      if (!batchData.length) {
+        batchChartPanel.hidden = true;
+        return;
+      }
+      batchChartPanel.hidden = false;
+      if (!window.Plotly) {
+        batchChart.className = "chart chart-empty";
+        batchChart.textContent = "Interactive chart assets are not available.";
+        return;
+      }
+      batchChart.className = "chart";
+      window.Plotly.purge(batchChart);
+      if (batchChartSelect.value === "density") renderDensityChart();
+      else renderBoxChart();
     }
 
     function closeBatchDetail() {
@@ -1007,6 +1158,7 @@ PAGE_HTML = """<!doctype html>
     }
 
     async function analyzeBatch() {
+      selection.open = false;
       analyze.disabled = true;
       analyze.textContent = "Analyzing batch…";
       results.hidden = true;
@@ -1022,6 +1174,8 @@ PAGE_HTML = """<!doctype html>
       batchDiscard.hidden = true;
       cancelRequested = false;
       batchSuccessfulCount = 0;
+      batchData = [];
+      batchSummaryStatistics = null;
       updateBatchProgress(0, selectedFiles.length, `0 of ${selectedFiles.length} complete`);
 
       try {
@@ -1055,6 +1209,13 @@ PAGE_HTML = """<!doctype html>
           addThumbnail(index, payload.result_index, payload.filename, payload.thumbnail_data_url, payload.statistics.statistics);
           showBatchSummary(payload.summary);
           batchSuccessfulCount += 1;
+          batchData.push({
+            filename: payload.filename,
+            selectedIndex: index,
+            resultIndex: payload.result_index,
+            statistics: payload.statistics.statistics,
+          });
+          renderBatchChart();
           updateBatchProgress(index + 1, selectedFiles.length, `${index + 1} of ${selectedFiles.length} complete`);
         }
 
@@ -1111,6 +1272,8 @@ PAGE_HTML = """<!doctype html>
       selection.hidden = true;
       selectionList.replaceChildren();
       batchResults.hidden = true;
+      batchChartPanel.hidden = true;
+      batchSummaryStatistics = null;
       fileName.textContent = "No image selected";
       status.textContent = "Batch discarded.";
       status.className = "";
@@ -1135,6 +1298,7 @@ PAGE_HTML = """<!doctype html>
       for (const url of detailUrls) URL.revokeObjectURL(url);
       detailUrls = [];
     });
+    batchChartSelect.addEventListener("change", renderBatchChart);
   </script>
 </body>
 </html>

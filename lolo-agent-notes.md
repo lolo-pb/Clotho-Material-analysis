@@ -84,6 +84,4 @@ The legacy `example-microg-processed/` folder is not used by the pipeline.
 - a nicer way to know that images have been uploaded or files selected.
 
 
-- Let users click a batch overlay to open an in-app modal. Show the original beside the overlay and the four composition cards; after the original is no longer available, show the overlay and its statistics alone.
-
 - Add four box-and-strip plots after the batch composition cards and before the image table. Plot each image's fiber, resin, pore, and unidentified percentage to show spread, median, and outliers. Wait for sample or magnification grouping before adding further comparative analytics.
